@@ -1,0 +1,51 @@
+# =============================================================================
+# IRON CITY THREAT INSPECTOR - CLIENT CONFIGURATION
+# =============================================================================
+# Update this file with client information before running vuln-report workflow
+# =============================================================================
+
+client:
+  name: "Acme Corporation"
+  contact_email: "security@acme.com"
+  engagement_id: "ENG-2024-001"
+  start_date: "2024-01-15"
+
+# Domain and IP mappings for asset correlation
+# Vulnerabilities will be grouped by these domains in reports
+domains:
+  - name: "acme.com"
+    ips: 
+      - "192.168.1.10"
+      - "192.168.1.11"
+    subnets:
+      - "192.168.1.0/24"
+    
+  - name: "api.acme.com"
+    ips:
+      - "192.168.2.10"
+    subnets:
+      - "192.168.2.0/24"
+
+  - name: "portal.acme.com"
+    ips:
+      - "192.168.3.10"
+
+# Scan file locations (relative to repo root)
+# Upload your scan files to the scans/ folder and update paths here
+scan_files:
+  qualys: "scans/qualys_report.xlsx"      # Qualys XLSX or CSV export
+  zap: "scans/zap_scan.xml"               # OWASP ZAP XML export
+  nmap: "scans/nmap_results.txt"          # Nmap text output
+  # nessus: "scans/nessus_export.nessus"  # Nessus native format (future)
+
+# Report settings
+report:
+  formats:
+    - html
+    - json
+  include_remediation: true
+  include_compliance: true
+  compliance_frameworks:
+    - pci-dss
+    - hipaa
+    - soc2

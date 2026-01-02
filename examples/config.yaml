@@ -1,0 +1,59 @@
+# Iron City Threat Inspector - Example Configuration
+# Copy this file to config.yaml and customize for your environment
+
+# Client Information
+client:
+  name: "Acme Corporation"
+
+# Domain/Asset Configuration
+# Used for correlating vulnerabilities to specific assets
+domains:
+  - name: "acme.com"
+    ips: ["192.168.1.10", "192.168.1.11"]
+    subnets: ["192.168.1.0/24"]
+    description: "Primary web infrastructure"
+  
+  - name: "api.acme.com"
+    ips: ["192.168.2.10"]
+    subnets: ["192.168.2.0/24"]
+    description: "API servers"
+
+# Output Configuration
+output:
+  directory: "./reports"
+  formats: ["html", "json"]
+
+# Remediation Engine Configuration
+remediation:
+  # Options: local, ollama, openai, anthropic
+  engine: "local"
+  
+  # For Ollama (recommended - free, local)
+  # ollama_host: "http://localhost:11434"
+  # ollama_model: "llama3"
+
+# Compliance Frameworks to Map
+compliance:
+  frameworks:
+    - "pci-dss"
+    - "hipaa"
+    - "soc2"
+    - "nist"
+
+# Scanner-specific settings
+scanners:
+  qualys:
+    # Column name mappings if your exports use different names
+    column_mappings:
+      title: "Vulnerability Title"
+      severity: "Severity"
+      asset_ip: "IP"
+  
+  zap:
+    # Minimum confidence level to include
+    min_confidence: "medium"
+
+# Logging
+logging:
+  level: "INFO"
+  file: "./logs/threat_inspector.log"

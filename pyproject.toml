@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "threat-inspector"
+version = "1.0.0"
+description = "Advanced Vulnerability Assessment & Remediation Platform"
+readme = "README.md"
+license = {text = "Proprietary"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Iron City IT Advisors", email = "support@ironcityit.com"}
+]
+keywords = [
+    "security",
+    "vulnerability",
+    "assessment",
+    "compliance",
+    "penetration-testing",
+    "cybersecurity"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+    "lxml>=4.9.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "sqlalchemy>=2.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "jinja2>=3.1.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+]
+
+[project.optional-dependencies]
+ai = [
+    "transformers>=4.35.0",
+    "torch>=2.1.0",
+    "nltk>=3.8.0",
+    "ollama>=0.1.0",
+]
+pdf = [
+    "weasyprint>=60.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+
+[project.scripts]
+threat-inspector = "threat_inspector.cli:main"
+
+[project.urls]
+Homepage = "https://ironcityit.com/threat-inspector"
+Documentation = "https://docs.ironcityit.com/threat-inspector"
+Repository = "https://github.com/ironcityit/threat-inspector"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=threat_inspector"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
