@@ -23,6 +23,14 @@ class APISettings(BaseSettings):
     host: str = Field(default="0.0.0.0", alias="API_HOST")
     port: int = Field(default=8000, alias="API_PORT")
     debug: bool = Field(default=False, alias="API_DEBUG")
+    # Comma-separated list of allowed CORS origins (e.g. the dashboard origin).
+    # Empty = same-origin only. Never use "*" together with credentials.
+    cors_origins: str = Field(default="", alias="API_CORS_ORIGINS")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Parse cors_origins into an explicit allowlist (no wildcards)."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip() and o.strip() != "*"]
 
 
 class RemediationSettings(BaseSettings):

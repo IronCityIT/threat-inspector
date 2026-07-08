@@ -30,7 +30,6 @@ RUN pip install --no-cache /wheels/*
 
 # Copy application code
 COPY src/ ./src/
-COPY templates/ ./templates/
 COPY assets/ ./assets/
 
 # Set Python path

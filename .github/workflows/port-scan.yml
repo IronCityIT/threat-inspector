@@ -1,0 +1,134 @@
+name: Iron City Threat Inspector - Port Scan
+
+# ============================================================
+# PORT SCAN - Discover open ports and services (blue-team recon)
+# Uses nmap internally. Triggered via workflow_dispatch only.
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Domain, URL, or IP to scan'
+        required: true
+      client_name:
+        description: 'Client identifier'
+        required: true
+      scan_id:
+        description: 'Unique scan identifier'
+        required: false
+      scan_type:
+        description: 'Scan depth: quick, standard, or full'
+        required: false
+        default: 'standard'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: port-scan-${{ inputs.client_name }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Port Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      scan_id: ${{ steps.ids.outputs.scan_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve scan identifiers
+        id: ids
+        run: |
+          if [ -z "${{ inputs.target }}" ]; then
+            echo "❌ ERROR: target is required"; exit 1
+          fi
+          if [ -z "${{ inputs.client_name }}" ]; then
+            echo "❌ ERROR: client_name is required"; exit 1
+          fi
+          SCAN_ID="${{ inputs.scan_id }}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="ti-${{ github.run_id }}"
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+          echo "✅ Inputs validated (client: ${{ inputs.client_name }}, scan_id: $SCAN_ID)"
+
+      - name: Install scanner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nmap
+
+      - name: Run port scan
+        run: |
+          TARGET="${{ inputs.target }}"
+          SCAN_TYPE="${{ inputs.scan_type }}"
+          SCAN_ID="${{ steps.ids.outputs.scan_id }}"
+          mkdir -p results
+          echo "🔍 Starting $SCAN_TYPE port scan"
+          case $SCAN_TYPE in
+            quick)
+              nmap -T4 -F --top-ports 100 -oX results/scan.xml -oN results/scan.txt $TARGET ;;
+            full)
+              nmap -T4 -p- -sV -sC -oX results/scan.xml -oN results/scan.txt $TARGET ;;
+            *)
+              nmap -T4 -sV -sC --top-ports 1000 -oX results/scan.xml -oN results/scan.txt $TARGET ;;
+          esac
+          echo "✅ Port scan complete"
+
+      - name: Build findings
+        env:
+          TARGET: ${{ inputs.target }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID: ${{ steps.ids.outputs.scan_id }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re
+          target = os.environ["TARGET"]
+          findings = []
+          try:
+              with open("results/scan.txt") as fh:
+                  for line in fh:
+                      m = re.match(r"(\d+)/(tcp|udp)\s+open\s+(\S+)(.*)", line.strip())
+                      if m:
+                          port, proto, svc, extra = m.groups()
+                          findings.append({
+                              "module": "port_scan",
+                              "target": target,
+                              "severity": "info",
+                              "title": f"Open port {port}/{proto} ({svc})",
+                              "detail": (svc + extra).strip(),
+                              "evidence": {"port": int(port), "protocol": proto, "service": svc},
+                          })
+          except FileNotFoundError:
+              pass
+          out = {
+              "client": os.environ["CLIENT_NAME"],
+              "scan_id": os.environ["SCAN_ID"],
+              "modules_run": ["port_scan"],
+              "target_count": 1,
+              "findings": findings,
+          }
+          with open("results/findings.json", "w") as fh:
+              json.dump(out, fh, indent=2)
+          print(f"📊 Open ports found: {len(findings)}")
+          PYEOF
+
+      - name: Upload findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: ti-findings-${{ steps.ids.outputs.scan_id }}
+          path: results/
+          retention-days: 90
+
+  pipeline:
+    name: Analyze & Store
+    needs: scan
+    uses: ./.github/workflows/_consensus-store.yml
+    with:
+      scan_type: port_scan
+      target: ${{ inputs.target }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ needs.scan.outputs.scan_id }}
+      findings_artifact: ti-findings-${{ needs.scan.outputs.scan_id }}
+    secrets: inherit

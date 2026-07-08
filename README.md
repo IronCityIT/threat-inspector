@@ -10,52 +10,58 @@
 
 ## Overview
 
-Iron City Threat Inspector is your first line of defense against sophisticated cyber threats. With advanced algorithms and detailed analysis, Threat Inspector identifies vulnerabilities that traditional systems might miss. Get actionable insights and real-time threat intelligence to fortify your defenses and stay ahead of potential attacks.
-
-**This is a Blue Team defensive tool** - focused on continuous monitoring, asset discovery, and vulnerability identification before attackers find them.
+Iron City Threat Inspector is a **Blue Team defensive** platform for continuous monitoring,
+asset discovery, and vulnerability identification — finding weaknesses before attackers do.
+Scans run as GitHub Actions, results are analyzed by the Iron City AI consensus engine, and
+findings are stored per-client and surfaced on the Threat Inspector dashboard.
 
 ---
 
 ## 🔧 Available Scans
 
+Only the scans below exist in this repository today. (Additional capabilities — e.g. container
+and secret scanning — are planned as separate modules and are **not** yet present.)
+
 | Workflow | Purpose | Risk Level |
 |----------|---------|------------|
-| `nmap-scan.yml` | Port scanning & service detection | 🟢 Safe |
-| `ssl-grade.yml` | TLS/SSL certificate grading | 🟢 Safe |
-| `asset-discovery.yml` | Subdomain & asset enumeration | 🟢 Safe |
-| `secret-scan.yml` | Exposed secrets detection | 🟢 Safe |
-| `container-scan.yml` | Docker/container vulnerabilities | 🟢 Safe |
-| `vuln-parse.yml` | Parse Qualys/ZAP/Nmap scan files | 🟢 Safe |
+| `port-scan.yml` | Port & service discovery | 🟢 Safe |
+| `ssl-grade.yml` | TLS/SSL certificate & transport grading + security headers | 🟢 Safe |
+| `asset-discovery.yml` | Subdomain & live-asset enumeration | 🟢 Safe |
+| `vuln-report.yml` | Aggregate uploaded scan exports into normalized findings | 🟢 Safe |
+
+Every scan feeds the shared pipeline: **findings → AI consensus analysis → `storeScanResults`
+(Firestore, partitioned by client)**.
 
 ---
 
 ## 🚀 Usage
 
+All scans are triggered via `workflow_dispatch` with the standard inputs `target`,
+`client_name` (required), and `scan_id` (optional — auto-generated if omitted).
+
 ### Via GitHub CLI
 
 ```bash
-# Port Scan
-gh workflow run nmap-scan.yml \
+# Port scan
+gh workflow run port-scan.yml \
   -f target="192.168.1.1" \
-  -f scan_id="client-$(date +%s)" \
-  -f client_id="acme"
+  -f client_name="acme" \
+  -f scan_id="acme-$(date +%s)"
 
-# SSL Grade
+# TLS/SSL grade
 gh workflow run ssl-grade.yml \
   -f target="example.com" \
-  -f scan_id="client-$(date +%s)" \
-  -f client_id="acme"
+  -f client_name="acme"
 
-# Asset Discovery
+# Asset discovery
 gh workflow run asset-discovery.yml \
   -f target="example.com" \
-  -f scan_id="client-$(date +%s)" \
-  -f client_id="acme"
+  -f client_name="acme"
 
-# Parse Vulnerability Scans
-gh workflow run vuln-parse.yml \
-  -f scan_id="client-$(date +%s)" \
-  -f client_id="acme"
+# Aggregate uploaded scan exports
+gh workflow run vuln-report.yml \
+  -f target="example.com" \
+  -f client_name="acme"
 ```
 
 ### Via GitHub API
@@ -64,8 +70,8 @@ gh workflow run vuln-parse.yml \
 curl -X POST \
   -H "Authorization: token $GITHUB_PAT" \
   -H "Accept: application/vnd.github.v3+json" \
-  https://api.github.com/repos/IronCityIT/ICIT-ThreatInspector/actions/workflows/nmap-scan.yml/dispatches \
-  -d '{"ref":"main","inputs":{"target":"192.168.1.1","scan_id":"abc123","client_id":"acme"}}'
+  https://api.github.com/repos/IronCityIT/threat-inspector/actions/workflows/port-scan.yml/dispatches \
+  -d '{"ref":"main","inputs":{"target":"192.168.1.1","client_name":"acme"}}'
 ```
 
 ---
@@ -73,32 +79,25 @@ curl -X POST \
 ## 📁 Repository Structure
 
 ```
-ICIT-ThreatInspector/
-├── .github/
-│   └── workflows/
-│       ├── nmap-scan.yml        # Port scanning
-│       ├── ssl-grade.yml        # TLS/SSL grading
-│       ├── asset-discovery.yml  # Subdomain enumeration
-│       ├── secret-scan.yml      # Gitleaks secret detection
-│       ├── container-scan.yml   # Trivy container scanning
-│       └── vuln-parse.yml       # Parse scan files & generate reports
-├── configs/
-│   └── client.yaml              # Client configuration template
-├── scripts/
-│   ├── parse_qualys.py          # Qualys parser
-│   ├── parse_zap.py             # ZAP XML parser
-│   ├── parse_nmap.py            # Nmap parser
-│   └── generate_report.py       # HTML report generator
-├── scans/                       # Upload scan files here
-├── outputs/                     # Generated reports
-└── README.md
+threat-inspector/
+├── .github/workflows/
+│   ├── port-scan.yml          # Port & service discovery
+│   ├── ssl-grade.yml          # TLS/SSL grading + security headers
+│   ├── asset-discovery.yml    # Subdomain & asset enumeration
+│   ├── vuln-report.yml        # Aggregate uploaded scan exports
+│   └── _consensus-store.yml   # Shared: AI consensus → storeScanResults
+├── functions/                 # storeScanResults Cloud Function (Firestore ingest)
+├── firestore.rules            # Multi-tenant read rules (filter by client_id)
+├── src/threat_inspector/      # Aggregation library, CLI, and local API/dashboard
+├── configs/client.yaml        # Client configuration template
+└── module_framework/          # Shared modular scan framework (adoption in progress)
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-Edit `configs/client.yaml` before running vulnerability parsing:
+Edit `configs/client.yaml` before running the vulnerability-report aggregation:
 
 ```yaml
 client:
@@ -118,25 +117,27 @@ scan_files:
 
 ---
 
-## 🔒 Security
+## 🔒 Security & Multi-Tenancy
 
-- All scans are **CLI-triggered only** (no defaults = no free rides)
-- `scan_id` required to track and validate requests
-- `client_id` for multi-tenant reporting
-- Results stored in Firebase with 90-day retention
-- No credentials stored in workflows
+- All scans are **workflow_dispatch-triggered** — no unattended default runs.
+- `client_name` is required and resolves to a `client_id` on every stored result.
+- Firestore data is partitioned as `clients/{client_id}/scans/{scan_id}`; security rules
+  restrict dashboard reads to the caller's own client (gated on Auth0 organization).
+- No credentials are stored in workflows — secrets are referenced by name only.
 
 ---
 
 ## 📊 Results
 
 Scan results are:
-1. Saved as GitHub Action artifacts (90-day retention)
-2. Posted to Firebase Cloud Function
-3. Displayed on the Threat Inspector dashboard
+1. Saved as GitHub Action artifacts (90-day retention).
+2. Analyzed by the Iron City AI consensus engine.
+3. Stored in Firestore via the `storeScanResults` Cloud Function, keyed by `client_id`.
+4. Displayed on the Threat Inspector dashboard (Auth0 login, per-client).
 
 ---
 
 ## License
 
 Proprietary - Iron City IT Advisors © 2024
+</content>

@@ -1,253 +1,160 @@
-name: Threat Inspector - SSL/TLS Grade
+name: Iron City Threat Inspector - TLS/SSL Grade
 
 # ============================================================
-# SSL/TLS GRADING - Check certificate and TLS configuration
-# Uses SSL Labs API for comprehensive grading
-# Triggered via CLI only - no manual runs without parameters
+# TLS/SSL GRADING - Certificate + transport security posture.
+# Uses the public SSL Labs grading API and openssl internally.
+# Triggered via workflow_dispatch only.
 # ============================================================
 
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'Domain to check (e.g., example.com)'
+        description: 'Domain, URL, or IP to scan'
+        required: true
+      client_name:
+        description: 'Client identifier'
         required: true
       scan_id:
-        description: 'Unique scan identifier from CLI'
-        required: true
-      client_id:
-        description: 'Client identifier for reporting'
+        description: 'Unique scan identifier'
         required: false
-        default: 'internal'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ssl-grade-${{ github.event.inputs.client_id }}
+  group: tls-grade-${{ inputs.client_name }}
   cancel-in-progress: false
 
 jobs:
-  ssl_grade:
-    name: SSL/TLS Grade Check
+  scan:
+    name: TLS/SSL Grade
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
+    outputs:
+      scan_id: ${{ steps.ids.outputs.scan_id }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate inputs
+      - name: Resolve scan identifiers
+        id: ids
         run: |
-          if [ -z "${{ github.event.inputs.target }}" ]; then
-            echo "❌ ERROR: target is required"
-            exit 1
+          if [ -z "${{ inputs.target }}" ]; then
+            echo "❌ ERROR: target is required"; exit 1
           fi
-          if [ -z "${{ github.event.inputs.scan_id }}" ]; then
-            echo "❌ ERROR: scan_id is required"
-            exit 1
+          if [ -z "${{ inputs.client_name }}" ]; then
+            echo "❌ ERROR: client_name is required"; exit 1
           fi
-          
-          # Remove protocol if present
-          TARGET="${{ github.event.inputs.target }}"
-          TARGET=$(echo "$TARGET" | sed 's|https://||g' | sed 's|http://||g' | sed 's|/.*||g')
-          echo "target_clean=$TARGET" >> $GITHUB_ENV
-          
-          echo "✅ Inputs validated"
-          echo "🎯 Target: $TARGET"
+          TARGET=$(echo "${{ inputs.target }}" | sed 's|https://||g; s|http://||g; s|/.*||g')
+          echo "target_clean=$TARGET" >> "$GITHUB_ENV"
+          SCAN_ID="${{ inputs.scan_id }}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="ti-${{ github.run_id }}"
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+          echo "✅ Inputs validated (client: ${{ inputs.client_name }}, target: $TARGET)"
 
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq openssl curl
+        run: sudo apt-get update && sudo apt-get install -y jq openssl curl
 
-      - name: Check SSL Labs API
-        id: ssllabs
+      - name: Grade transport security
+        id: grade
         run: |
           TARGET="${{ env.target_clean }}"
-          SCAN_ID="${{ github.event.inputs.scan_id }}"
-          
           mkdir -p results
-          
-          echo "🔍 Starting SSL Labs scan for $TARGET"
-          echo "================================================"
-          
-          # Start the scan
+          echo "🔍 Grading transport security for $TARGET"
           RESPONSE=$(curl -s "https://api.ssllabs.com/api/v3/analyze?host=${TARGET}&startNew=on&all=done")
-          
-          # Poll until complete (max 5 minutes)
           for i in {1..30}; do
             STATUS=$(echo "$RESPONSE" | jq -r '.status')
             echo "Status: $STATUS (attempt $i/30)"
-            
-            if [ "$STATUS" = "READY" ]; then
-              break
-            elif [ "$STATUS" = "ERROR" ]; then
-              echo "❌ SSL Labs returned error"
-              echo "$RESPONSE" | jq .
-              exit 1
-            fi
-            
+            [ "$STATUS" = "READY" ] && break
+            [ "$STATUS" = "ERROR" ] && { echo "grade=N/A" >> "$GITHUB_OUTPUT"; break; }
             sleep 10
             RESPONSE=$(curl -s "https://api.ssllabs.com/api/v3/analyze?host=${TARGET}&all=done")
           done
-          
-          # Save full response
-          echo "$RESPONSE" | jq . > results/ssllabs-${SCAN_ID}.json
-          
-          # Extract grade
+          echo "$RESPONSE" | jq . > results/grade.json 2>/dev/null || echo "{}" > results/grade.json
           GRADE=$(echo "$RESPONSE" | jq -r '.endpoints[0].grade // "N/A"')
-          GRADE_TRUST=$(echo "$RESPONSE" | jq -r '.endpoints[0].gradeTrustIgnored // "N/A"')
-          HAS_WARNINGS=$(echo "$RESPONSE" | jq -r '.endpoints[0].hasWarnings // false')
-          PROTOCOL=$(echo "$RESPONSE" | jq -r '.protocol // "unknown"')
-          
-          echo "grade=$GRADE" >> $GITHUB_OUTPUT
-          echo "grade_trust=$GRADE_TRUST" >> $GITHUB_OUTPUT
-          echo "has_warnings=$HAS_WARNINGS" >> $GITHUB_OUTPUT
-          
-          echo "================================================"
-          echo "📊 SSL Grade: $GRADE"
-          echo "🔐 Grade (Trust Ignored): $GRADE_TRUST"
-          echo "⚠️ Has Warnings: $HAS_WARNINGS"
+          echo "grade=$GRADE" >> "$GITHUB_OUTPUT"
+          echo "📊 Grade: $GRADE"
 
-      - name: Check Security Headers
+      - name: Check security headers
         id: headers
         run: |
           TARGET="${{ env.target_clean }}"
-          SCAN_ID="${{ github.event.inputs.scan_id }}"
-          
-          echo "🔍 Checking security headers for $TARGET"
-          echo "================================================"
-          
-          # Get headers
           HEADERS=$(curl -sI "https://${TARGET}" 2>/dev/null || curl -sI "http://${TARGET}" 2>/dev/null)
-          
-          echo "$HEADERS" > results/headers-${SCAN_ID}.txt
-          
-          # Check for security headers
-          check_header() {
-            if echo "$HEADERS" | grep -qi "$1"; then
-              echo "✅ $1: Present"
-              return 0
-            else
-              echo "❌ $1: Missing"
-              return 1
-            fi
-          }
-          
+          echo "$HEADERS" > results/headers.txt
           MISSING=0
-          
-          check_header "Strict-Transport-Security" || ((MISSING++))
-          check_header "X-Content-Type-Options" || ((MISSING++))
-          check_header "X-Frame-Options" || ((MISSING++))
-          check_header "Content-Security-Policy" || ((MISSING++))
-          check_header "X-XSS-Protection" || ((MISSING++))
-          check_header "Referrer-Policy" || ((MISSING++))
-          
-          echo "missing_headers=$MISSING" >> $GITHUB_OUTPUT
-          
-          echo "================================================"
-          echo "📊 Missing Security Headers: $MISSING"
+          for H in Strict-Transport-Security X-Content-Type-Options X-Frame-Options Content-Security-Policy X-XSS-Protection Referrer-Policy; do
+            echo "$HEADERS" | grep -qi "$H" && echo "✅ $H" || { echo "❌ $H"; MISSING=$((MISSING+1)); }
+          done
+          echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
 
-      - name: Check Certificate Details
+      - name: Check certificate
         id: cert
         run: |
           TARGET="${{ env.target_clean }}"
-          SCAN_ID="${{ github.event.inputs.scan_id }}"
-          
-          echo "🔍 Checking certificate for $TARGET"
-          echo "================================================"
-          
-          # Get certificate info
-          CERT_INFO=$(echo | openssl s_client -servername ${TARGET} -connect ${TARGET}:443 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>/dev/null)
-          
-          echo "$CERT_INFO" > results/cert-${SCAN_ID}.txt
-          
-          # Extract expiry
+          CERT_INFO=$(echo | openssl s_client -servername ${TARGET} -connect ${TARGET}:443 2>/dev/null | openssl x509 -noout -dates 2>/dev/null)
+          echo "$CERT_INFO" > results/cert.txt
           EXPIRY=$(echo "$CERT_INFO" | grep "notAfter" | cut -d= -f2)
           EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null || echo "0")
-          NOW_EPOCH=$(date +%s)
-          DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
-          
-          echo "cert_expiry=$EXPIRY" >> $GITHUB_OUTPUT
-          echo "days_left=$DAYS_LEFT" >> $GITHUB_OUTPUT
-          
-          echo "📅 Certificate Expires: $EXPIRY"
-          echo "⏰ Days Remaining: $DAYS_LEFT"
-          
-          if [ "$DAYS_LEFT" -lt 30 ]; then
-            echo "⚠️ WARNING: Certificate expires in less than 30 days!"
-          fi
+          DAYS_LEFT=$(( (EXPIRY_EPOCH - $(date +%s)) / 86400 ))
+          echo "days_left=$DAYS_LEFT" >> "$GITHUB_OUTPUT"
+          echo "⏰ Days remaining: $DAYS_LEFT"
 
-      - name: Generate Summary
+      - name: Build findings
+        env:
+          TARGET: ${{ env.target_clean }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID: ${{ steps.ids.outputs.scan_id }}
+          GRADE: ${{ steps.grade.outputs.grade }}
+          MISSING: ${{ steps.headers.outputs.missing }}
+          DAYS_LEFT: ${{ steps.cert.outputs.days_left }}
         run: |
-          SCAN_ID="${{ github.event.inputs.scan_id }}"
-          
-          cat << EOF > results/summary-${SCAN_ID}.md
-          # Threat Inspector - SSL/TLS Grade Results
-          
-          **Target:** ${{ env.target_clean }}
-          **Scan ID:** ${{ github.event.inputs.scan_id }}
-          **Client:** ${{ github.event.inputs.client_id }}
-          **Timestamp:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          
-          ## SSL Labs Grade
-          
-          | Metric | Value |
-          |--------|-------|
-          | **Grade** | ${{ steps.ssllabs.outputs.grade }} |
-          | **Grade (Trust Ignored)** | ${{ steps.ssllabs.outputs.grade_trust }} |
-          | **Has Warnings** | ${{ steps.ssllabs.outputs.has_warnings }} |
-          
-          ## Certificate
-          
-          | Metric | Value |
-          |--------|-------|
-          | **Expires** | ${{ steps.cert.outputs.cert_expiry }} |
-          | **Days Remaining** | ${{ steps.cert.outputs.days_left }} |
-          
-          ## Security Headers
-          
-          **Missing Headers:** ${{ steps.headers.outputs.missing_headers }}
-          
-          EOF
-          
-          cat results/summary-${SCAN_ID}.md
+          python3 - <<'PYEOF'
+          import json, os
+          target = os.environ["TARGET"]
+          grade = os.environ.get("GRADE", "N/A")
+          missing = int(os.environ.get("MISSING", "0") or 0)
+          days = int(os.environ.get("DAYS_LEFT", "0") or 0)
+          findings = []
+          if grade and grade not in ("A+", "A", "N/A"):
+              findings.append({"module": "tls_check", "target": target, "severity": "medium",
+                               "title": f"Transport security grade: {grade}",
+                               "detail": "Transport security below recommended grade (A/A+).",
+                               "evidence": {"grade": grade}})
+          if missing:
+              findings.append({"module": "header_security_check", "target": target,
+                               "severity": "low" if missing < 3 else "medium",
+                               "title": f"{missing} recommended security header(s) missing",
+                               "detail": "One or more hardening response headers are absent.",
+                               "evidence": {"missing_count": missing}})
+          if 0 <= days < 30:
+              findings.append({"module": "tls_check", "target": target, "severity": "high",
+                               "title": f"Certificate expires in {days} day(s)",
+                               "detail": "Certificate is near expiry and should be renewed.",
+                               "evidence": {"days_left": days}})
+          out = {"client": os.environ["CLIENT_NAME"], "scan_id": os.environ["SCAN_ID"],
+                 "modules_run": ["tls_check", "header_security_check"],
+                 "target_count": 1, "findings": findings}
+          with open("results/findings.json", "w") as fh:
+              json.dump(out, fh, indent=2)
+          print(f"📊 Findings: {len(findings)}")
+          PYEOF
 
-      - name: Upload Artifacts
+      - name: Upload findings
         uses: actions/upload-artifact@v4
         with:
-          name: ssl-grade-results-${{ github.event.inputs.scan_id }}
+          name: ti-findings-${{ steps.ids.outputs.scan_id }}
           path: results/
           retention-days: 90
 
-      - name: Post to Firebase
-        if: always()
-        run: |
-          curl -X POST "${{ secrets.FIREBASE_FUNCTION_URL }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "scan_type": "ssl_grade",
-              "scan_id": "${{ github.event.inputs.scan_id }}",
-              "client_id": "${{ github.event.inputs.client_id }}",
-              "target": "${{ env.target_clean }}",
-              "grade": "${{ steps.ssllabs.outputs.grade }}",
-              "grade_trust": "${{ steps.ssllabs.outputs.grade_trust }}",
-              "has_warnings": ${{ steps.ssllabs.outputs.has_warnings }},
-              "missing_headers": ${{ steps.headers.outputs.missing_headers }},
-              "cert_days_left": ${{ steps.cert.outputs.days_left }},
-              "status": "completed",
-              "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
-            }' || echo "⚠️ Firebase post failed (function may not be deployed)"
-
-      - name: Scan Complete
-        run: |
-          echo "================================================"
-          echo "🛡️ THREAT INSPECTOR - SSL/TLS GRADE COMPLETE"
-          echo "================================================"
-          echo "Target: ${{ env.target_clean }}"
-          echo "Grade: ${{ steps.ssllabs.outputs.grade }}"
-          echo "Missing Headers: ${{ steps.headers.outputs.missing_headers }}"
-          echo "Cert Days Left: ${{ steps.cert.outputs.days_left }}"
-          echo "Scan ID: ${{ github.event.inputs.scan_id }}"
-          echo "================================================"
+  pipeline:
+    name: Analyze & Store
+    needs: scan
+    uses: ./.github/workflows/_consensus-store.yml
+    with:
+      scan_type: tls_check
+      target: ${{ inputs.target }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ needs.scan.outputs.scan_id }}
+      findings_artifact: ti-findings-${{ needs.scan.outputs.scan_id }}
+    secrets: inherit

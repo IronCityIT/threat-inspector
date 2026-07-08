@@ -35,16 +35,18 @@ PARSER_REGISTRY: list[Type[BaseParser]] = [
     NessusParser,
 ]
 
-# Supported file formats
+# Supported file formats.
+# Descriptions are client-safe (white-labeled): they must not name the underlying
+# scanner/vendor. Internal auto-detection below still keys off vendor filename hints.
 SUPPORTED_FORMATS = {
-    ".xlsx": "Qualys Excel",
-    ".xlsm": "Qualys Excel (macro-enabled)",
-    ".csv": "CSV (Qualys, Nessus)",
-    ".xml": "XML (ZAP, Nmap, Nessus)",
-    ".json": "JSON (ZAP)",
-    ".nessus": "Nessus native format",
-    ".txt": "Text (Nmap)",
-    ".nmap": "Nmap text output",
+    ".xlsx": "Spreadsheet export (Excel)",
+    ".xlsm": "Spreadsheet export (macro-enabled Excel)",
+    ".csv": "CSV scan export",
+    ".xml": "XML scan export",
+    ".json": "JSON scan export",
+    ".nessus": "Vulnerability scan export",
+    ".txt": "Text scan output",
+    ".nmap": "Network scan output",
 }
 
 

@@ -1,0 +1,117 @@
+name: Iron City Threat Inspector - Analyze & Store
+
+# ============================================================
+# Reusable pipeline shared by every scan workflow.
+#   findings --> AI consensus analysis --> storeScanResults (Firestore)
+# White-label: no underlying tool names appear in any client-visible output.
+# ============================================================
+
+on:
+  workflow_call:
+    inputs:
+      scan_type:
+        description: 'Internal scan category (e.g. port_scan, tls_check)'
+        required: true
+        type: string
+      target:
+        description: 'Domain, URL, or IP that was scanned'
+        required: true
+        type: string
+      client_name:
+        description: 'Client identifier'
+        required: true
+        type: string
+      scan_id:
+        description: 'Unique scan identifier'
+        required: true
+        type: string
+      findings_artifact:
+        description: 'Name of the uploaded artifact containing findings.json'
+        required: true
+        type: string
+
+jobs:
+  # AI analysis is the single source of truth — delegated to the shared engine,
+  # never re-implemented here. Input contract assumed per the consensus-engine
+  # README; confirm against IronCityIT/consensus-engine before production use.
+  analyze:
+    name: AI Consensus Analysis
+    uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
+    with:
+      target: ${{ inputs.target }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ inputs.scan_id }}
+    secrets: inherit
+
+  store:
+    name: Store Results
+    needs: analyze
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.findings_artifact }}
+          path: incoming
+
+      - name: Derive client_id
+        id: ids
+        run: |
+          CLIENT="${{ inputs.client_name }}"
+          CLIENT_ID=$(echo "$CLIENT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+          echo "client_id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
+          echo "Resolved client_id: $CLIENT_ID"
+
+      - name: Build storeScanResults payload
+        env:
+          SCAN_TYPE: ${{ inputs.scan_type }}
+          SCAN_ID: ${{ inputs.scan_id }}
+          CLIENT_ID: ${{ steps.ids.outputs.client_id }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          TARGET: ${{ inputs.target }}
+          CONSENSUS_STATUS: ${{ needs.analyze.result }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, glob, datetime
+
+          findings = {"findings": [], "modules_run": [], "target_count": 0}
+          matches = glob.glob("incoming/**/findings.json", recursive=True) + glob.glob("incoming/findings.json")
+          if matches:
+              with open(matches[0]) as fh:
+                  findings = json.load(fh)
+
+          fl = findings.get("findings", [])
+          summary = {"total": len(fl)}
+          for f in fl:
+              sev = str(f.get("severity", "info")).lower()
+              summary[sev] = summary.get(sev, 0) + 1
+
+          payload = {
+              "scan_type": os.environ["SCAN_TYPE"],
+              "scan_id": os.environ["SCAN_ID"],
+              "client_id": os.environ["CLIENT_ID"],
+              "client_name": os.environ["CLIENT_NAME"],
+              "target": os.environ["TARGET"],
+              "status": "completed",
+              "consensus": {"status": os.environ.get("CONSENSUS_STATUS", "unknown")},
+              "summary": summary,
+              "findings": fl,
+              "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          with open("payload.json", "w") as fh:
+              json.dump(payload, fh)
+          print(f"Payload built: {summary['total']} findings, client_id={payload['client_id']}")
+          PYEOF
+
+      - name: POST to storeScanResults
+        run: |
+          if [ -z "${{ secrets.STORE_SCAN_RESULTS_URL }}" ]; then
+            echo "::warning::STORE_SCAN_RESULTS_URL not set — skipping store (function not yet deployed)"
+            exit 0
+          fi
+          curl -sS -X POST "${{ secrets.STORE_SCAN_RESULTS_URL }}" \
+            -H "Content-Type: application/json" \
+            --data @payload.json \
+            && echo "✅ Results stored" \
+            || echo "::warning::store POST failed (function may not be deployed)"
