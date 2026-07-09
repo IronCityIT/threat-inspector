@@ -437,3 +437,72 @@ never in `catalog()` output, findings, or workflow output a client sees.
 - **OpenVAS** intentionally NOT added — no source exists to re-house. Building a parser
   from zero would be fabrication, out of scope. Flagged above.
 - **Not deployed** — scaffolding only. No blockers; no parser logic dropped.
+
+---
+
+# E2E harness (`icit-e2e-harness`) + Threat Inspector adoption
+
+**Date:** 2026-07-09
+
+## What was built (shared repo — DONE, merged)
+- Created **`IronCityIT/icit-e2e-harness`** (the one org repo this task authorized) and
+  seeded it from the approved scaffold: `package.json`, `playwright.config.ts`,
+  `src/config.ts`, `README.md`, reusable `.github/workflows/e2e.yml` (`workflow_call`).
+- Wrote the two remaining shared specs to the isolation test's contract, plus a shared
+  login helper:
+  - `src/shared/login.ts` — extracted the Auth0 Universal Login flow into a shared
+    helper. **Killed the placeholder `throw`** that was inline in the isolation spec;
+    `tenant-isolation.spec.ts` now imports it. Selectors are the standard Auth0
+    universal-login markup, finalized per-product at adoption.
+  - `src/shared/login.spec.ts` — tenant logs in → lands on dashboard, not an error page.
+  - `src/shared/dashboard.spec.ts` — dashboard renders tenant data, no fatal console errors.
+  - `tenant-isolation.spec.ts` — **assertions unchanged** (DOM + network isolation); only
+    the inline login was extracted.
+- `npx playwright test --list` → **3 tests collect clean**. YAML + JSON validated.
+  Cannot run green yet (needs a live `DASHBOARD_URL` + tenant secrets — by design).
+- **PR #1 opened and MERGED to `main`.** Reusable `e2e.yml` is live on `main`, callable via
+  `uses: IronCityIT/icit-e2e-harness/.github/workflows/e2e.yml@main`.
+
+## Threat Inspector adoption — **HALTED (no dashboard to test)**
+Per TASKS-e2e.md Step 2, the hard dependency was checked FIRST. Threat Inspector has
+**no dashboard**:
+- `firebase.json` declares only `functions` + `firestore` — **no `hosting` block**.
+- No `public/`, `dashboard/`, or `*-platform/` directory; **no `index.html`** anywhere in
+  the repo; no frontend framework (no React/Vue/Vite/Angular, no non-`functions`
+  `package.json`).
+- `.firebaserc` points at project `iron-city-it-threatinspector`, but nothing is hosted.
+- Consistent with the existing note above: "Dashboard still not wired to
+  `registry.catalog()` — same deferral as PR 2." The dashboard is planned, not built.
+
+The harness tests a **running** dashboard; it cannot test a repo. With no dashboard there
+is nothing to E2E, so **Step 2 was halted** — no `productize/threat-inspector-e2e` branch
+was created, no fake dashboard or test target was fabricated (both explicitly prohibited).
+
+**E2E harness built and merged; Threat Inspector adoption blocked — no dashboard in repo
+to test. Needs a dashboard before E2E can run.**
+
+## Secrets Bill must set (when a TI dashboard exists and adoption resumes)
+On the **threat-inspector** repo (tenant fixtures are Bill's to set — not invented here):
+`TENANT_A_USER`, `TENANT_A_PASS`, `TENANT_A_CLIENT`, `TENANT_A_SENTINEL`,
+`TENANT_B_USER`, `TENANT_B_PASS`, `TENANT_B_CLIENT`, `TENANT_B_SENTINEL`.
+`*_CLIENT` = the client name that SHOULD appear when logged in as that tenant;
+`*_SENTINEL` = a unique string that is that tenant's data and must never leak to the other.
+
+## To resume TI adoption once a dashboard is deployed
+1. Branch `productize/threat-inspector-e2e`.
+2. Add a deploy-or-serve step to a TI workflow that yields a live URL (Firebase Hosting
+   preview channel or `firebase serve` in CI), then call
+   `uses: IronCityIT/icit-e2e-harness/.github/workflows/e2e.yml@main` with
+   `dashboard_url` = that URL, `product: threat-inspector`, `secrets: inherit`.
+3. Confirm the shared login helper's selectors against the real dashboard/login page and
+   that the three isolation assertions map to real elements — **do not weaken them**.
+4. Set the 8 tenant secrets above. The e2e gate goes green only after secrets are set AND
+   a real dashboard is deployed.
+
+## Environment note
+`node`/`npm` were not preinstalled; a local Node 20 was fetched to run `npm ci` /
+`playwright install` / `playwright test --list`. `playwright install --with-deps` failed
+on the apt index (environment/network), so the browser binary was installed without
+`--with-deps` (irrelevant to `--list`, which doesn't launch a browser). The
+`icit-quality-gates` skill is not installed in this environment; applicable gates
+(collect/compile, YAML, JSON) were run manually — all green.
