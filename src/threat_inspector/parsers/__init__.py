@@ -4,17 +4,16 @@ Auto-detects and parses various scanner output formats.
 """
 
 from pathlib import Path
-from typing import Optional, Type
 
-from .base import BaseParser, ParseResult, ParsedVulnerability
-from .qualys import QualysParser, QualysComplianceParser
-from .zap import ZAPParser
-from .nmap import NmapParser
+from .base import BaseParser, ParsedVulnerability, ParseResult
 from .nessus import NessusParser
+from .nmap import NmapParser
+from .qualys import QualysComplianceParser, QualysParser
+from .zap import ZAPParser
 
 __all__ = [
     "BaseParser",
-    "ParseResult", 
+    "ParseResult",
     "ParsedVulnerability",
     "QualysParser",
     "QualysComplianceParser",
@@ -27,7 +26,7 @@ __all__ = [
 ]
 
 # Registry of all parsers
-PARSER_REGISTRY: list[Type[BaseParser]] = [
+PARSER_REGISTRY: list[type[BaseParser]] = [
     QualysParser,
     QualysComplianceParser,
     ZAPParser,
@@ -35,27 +34,29 @@ PARSER_REGISTRY: list[Type[BaseParser]] = [
     NessusParser,
 ]
 
-# Supported file formats
+# Supported file formats.
+# Descriptions are client-safe (white-labeled): they must not name the underlying
+# scanner/vendor. Internal auto-detection below still keys off vendor filename hints.
 SUPPORTED_FORMATS = {
-    ".xlsx": "Qualys Excel",
-    ".xlsm": "Qualys Excel (macro-enabled)",
-    ".csv": "CSV (Qualys, Nessus)",
-    ".xml": "XML (ZAP, Nmap, Nessus)",
-    ".json": "JSON (ZAP)",
-    ".nessus": "Nessus native format",
-    ".txt": "Text (Nmap)",
-    ".nmap": "Nmap text output",
+    ".xlsx": "Spreadsheet export (Excel)",
+    ".xlsm": "Spreadsheet export (macro-enabled Excel)",
+    ".csv": "CSV scan export",
+    ".xml": "XML scan export",
+    ".json": "JSON scan export",
+    ".nessus": "Vulnerability scan export",
+    ".txt": "Text scan output",
+    ".nmap": "Network scan output",
 }
 
 
-def get_parser(file_path: Path, scanner_type: Optional[str] = None) -> Optional[BaseParser]:
+def get_parser(file_path: Path, scanner_type: str | None = None) -> BaseParser | None:
     """
     Get the appropriate parser for a file.
-    
+
     Args:
         file_path: Path to the scan file
         scanner_type: Optional hint for scanner type (qualys, zap, nmap, nessus)
-        
+
     Returns:
         Parser instance or None if no suitable parser found
     """
@@ -66,42 +67,42 @@ def get_parser(file_path: Path, scanner_type: Optional[str] = None) -> Optional[
             if parser_class.SCANNER_TYPE == scanner_type:
                 if parser_class.can_parse(file_path):
                     return parser_class()
-    
+
     # Auto-detect based on file extension and content
     extension = file_path.suffix.lower()
-    
+
     # Special handling for .nessus files
     if extension == ".nessus":
         return NessusParser()
-    
+
     # Try to detect from filename hints
     filename_lower = file_path.name.lower()
-    
+
     if "qualys" in filename_lower:
         if "compliance" in filename_lower:
             return QualysComplianceParser()
         return QualysParser()
-    
+
     if "zap" in filename_lower:
         return ZAPParser()
-    
+
     if "nmap" in filename_lower:
         return NmapParser()
-    
+
     if "nessus" in filename_lower or "tenable" in filename_lower:
         return NessusParser()
-    
+
     # Fall back to extension-based detection
     if extension in [".xlsx", ".xlsm"]:
         # Default Excel files to Qualys
         return QualysParser()
-    
+
     if extension == ".xml":
         # Try to detect XML type from content
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 header = f.read(500).lower()
-            
+
             if "owasp zap" in header or "<alertitem" in header:
                 return ZAPParser()
             if "nessus" in header or "<reporthost" in header:
@@ -110,57 +111,57 @@ def get_parser(file_path: Path, scanner_type: Optional[str] = None) -> Optional[
                 return NmapParser()
         except Exception:
             pass
-        
+
         # Default XML to ZAP
         return ZAPParser()
-    
+
     if extension in [".txt", ".nmap"]:
         return NmapParser()
-    
+
     if extension == ".json":
         return ZAPParser()
-    
+
     if extension == ".csv":
         # Try to detect CSV type from headers
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 header = f.readline().lower()
-            
+
             if "plugin" in header or "nessus" in header:
                 return NessusParser()
             # Default CSV to Qualys
             return QualysParser()
         except Exception:
             return QualysParser()
-    
+
     return None
 
 
-def parse_file(file_path: Path, scanner_type: Optional[str] = None) -> ParseResult:
+def parse_file(file_path: Path, scanner_type: str | None = None) -> ParseResult:
     """
     Parse a vulnerability scan file.
-    
+
     Args:
         file_path: Path to the scan file
         scanner_type: Optional hint for scanner type
-        
+
     Returns:
         ParseResult with vulnerabilities and metadata
-        
+
     Raises:
         ValueError: If no suitable parser found
     """
     file_path = Path(file_path)
-    
+
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
-    
+
     parser = get_parser(file_path, scanner_type)
-    
+
     if parser is None:
         raise ValueError(
             f"No parser available for file: {file_path}\n"
             f"Supported formats: {', '.join(SUPPORTED_FORMATS.keys())}"
         )
-    
+
     return parser.parse(file_path)

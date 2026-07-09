@@ -4,7 +4,6 @@ Maps vulnerabilities to PCI-DSS, HIPAA, SOC2, NIST, and other frameworks.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -13,7 +12,7 @@ class ComplianceMapping:
     framework: str
     requirement: str
     description: str
-    
+
 
 # PCI-DSS v4.0 Mappings
 PCI_DSS_MAPPINGS = {
@@ -175,47 +174,47 @@ NIST_MAPPINGS = {
 
 def get_compliance_mappings(
     vulnerability_title: str,
-    frameworks: Optional[list[str]] = None,
+    frameworks: list[str] | None = None,
 ) -> list[ComplianceMapping]:
     """
     Get compliance framework mappings for a vulnerability.
-    
+
     Args:
         vulnerability_title: The vulnerability title/name
         frameworks: List of frameworks to check (default: all)
-        
+
     Returns:
         List of ComplianceMapping objects
     """
     if frameworks is None:
         frameworks = ["pci-dss", "hipaa", "soc2", "nist"]
-    
+
     frameworks = [f.lower().replace("-", "").replace("_", "") for f in frameworks]
-    
+
     title_lower = vulnerability_title.lower()
     mappings = []
-    
+
     # Check each framework
     if "pcidss" in frameworks:
         for keyword, maps in PCI_DSS_MAPPINGS.items():
             if keyword in title_lower:
                 mappings.extend(maps)
-    
+
     if "hipaa" in frameworks:
         for keyword, maps in HIPAA_MAPPINGS.items():
             if keyword in title_lower:
                 mappings.extend(maps)
-    
+
     if "soc2" in frameworks:
         for keyword, maps in SOC2_MAPPINGS.items():
             if keyword in title_lower:
                 mappings.extend(maps)
-    
+
     if "nist" in frameworks or "nist80053" in frameworks:
         for keyword, maps in NIST_MAPPINGS.items():
             if keyword in title_lower:
                 mappings.extend(maps)
-    
+
     # Remove duplicates
     seen = set()
     unique_mappings = []
@@ -224,17 +223,17 @@ def get_compliance_mappings(
         if key not in seen:
             seen.add(key)
             unique_mappings.append(m)
-    
+
     return unique_mappings
 
 
 def format_compliance_tags(mappings: list[ComplianceMapping]) -> list[str]:
     """
     Format compliance mappings as tags.
-    
+
     Args:
         mappings: List of ComplianceMapping objects
-        
+
     Returns:
         List of formatted tags like "PCI-DSS-6.5.1"
     """

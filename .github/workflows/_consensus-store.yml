@@ -1,0 +1,148 @@
+name: Iron City Threat Inspector - Analyze & Store
+
+# ============================================================
+# Reusable pipeline shared by every scan workflow.
+#   findings --> AI consensus analysis --> storeScanResults (Firestore)
+# White-label: no underlying tool names appear in any client-visible output.
+# ============================================================
+
+on:
+  workflow_call:
+    inputs:
+      scan_type:
+        description: 'Internal scan category (e.g. port_scan, tls_check)'
+        required: true
+        type: string
+      target:
+        description: 'Domain, URL, or IP that was scanned'
+        required: true
+        type: string
+      client_name:
+        description: 'Client identifier'
+        required: true
+        type: string
+      scan_id:
+        description: 'Unique scan identifier'
+        required: true
+        type: string
+      findings_artifact:
+        description: 'Name of the uploaded artifact containing findings.json'
+        required: true
+        type: string
+
+jobs:
+  # The shared engine consumes findings INLINE as base64 (input: findings_json),
+  # not as an artifact, so we pack them here first. This job is also the single
+  # source of truth for client_id (consumed by both analyze and store).
+  prep:
+    name: Prepare findings
+    runs-on: ubuntu-latest
+    outputs:
+      findings_json: ${{ steps.pack.outputs.findings_json }}
+      client_id: ${{ steps.ids.outputs.client_id }}
+    steps:
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.findings_artifact }}
+          path: incoming
+
+      - name: Derive client_id
+        id: ids
+        run: |
+          CLIENT="${{ inputs.client_name }}"
+          CLIENT_ID=$(echo "$CLIENT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+          echo "client_id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
+          echo "Resolved client_id: $CLIENT_ID"
+
+      - name: Pack findings as base64
+        id: pack
+        run: |
+          FILE=$(find incoming -name findings.json | head -n1)
+          if [ -z "$FILE" ]; then
+            echo "::warning::findings.json not found in artifact — sending empty findings set"
+            echo '{"findings":[]}' > /tmp/findings.json
+            FILE=/tmp/findings.json
+          fi
+          echo "findings_json=$(base64 -w0 "$FILE")" >> "$GITHUB_OUTPUT"
+
+  # AI analysis is the single source of truth — delegated to the shared engine,
+  # never re-implemented here. Input/secret contract VERIFIED against
+  # IronCityIT/consensus-engine/.github/workflows/analyze.yml@main.
+  analyze:
+    name: AI Consensus Analysis
+    needs: prep
+    uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
+    with:
+      findings_json: ${{ needs.prep.outputs.findings_json }}
+      product: threat-inspector
+      client_id: ${{ needs.prep.outputs.client_id }}
+      scan_id: ${{ inputs.scan_id }}
+    # Engine requires GROQ_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY,
+    # IRONCITY_API_KEY — all provided via the org-level secret inheritance chain.
+    secrets: inherit
+
+  store:
+    name: Store Results
+    needs: [prep, analyze]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.findings_artifact }}
+          path: incoming
+
+      - name: Build storeScanResults payload
+        env:
+          SCAN_TYPE: ${{ inputs.scan_type }}
+          SCAN_ID: ${{ inputs.scan_id }}
+          CLIENT_ID: ${{ needs.prep.outputs.client_id }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          TARGET: ${{ inputs.target }}
+          CONSENSUS_STATUS: ${{ needs.analyze.result }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, glob, datetime
+
+          findings = {"findings": [], "modules_run": [], "target_count": 0}
+          matches = glob.glob("incoming/**/findings.json", recursive=True) + glob.glob("incoming/findings.json")
+          if matches:
+              with open(matches[0]) as fh:
+                  findings = json.load(fh)
+
+          fl = findings.get("findings", [])
+          summary = {"total": len(fl)}
+          for f in fl:
+              sev = str(f.get("severity", "info")).lower()
+              summary[sev] = summary.get(sev, 0) + 1
+
+          payload = {
+              "scan_type": os.environ["SCAN_TYPE"],
+              "scan_id": os.environ["SCAN_ID"],
+              "client_id": os.environ["CLIENT_ID"],
+              "client_name": os.environ["CLIENT_NAME"],
+              "target": os.environ["TARGET"],
+              "status": "completed",
+              "consensus": {"status": os.environ.get("CONSENSUS_STATUS", "unknown")},
+              "summary": summary,
+              "findings": fl,
+              "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          with open("payload.json", "w") as fh:
+              json.dump(payload, fh)
+          print(f"Payload built: {summary['total']} findings, client_id={payload['client_id']}")
+          PYEOF
+
+      - name: POST to storeScanResults
+        run: |
+          if [ -z "${{ secrets.STORE_SCAN_RESULTS_URL }}" ]; then
+            echo "::warning::STORE_SCAN_RESULTS_URL not set — skipping store (function not yet deployed)"
+            exit 0
+          fi
+          curl -sS -X POST "${{ secrets.STORE_SCAN_RESULTS_URL }}" \
+            -H "Content-Type: application/json" \
+            --data @payload.json \
+            && echo "✅ Results stored" \
+            || echo "::warning::store POST failed (function may not be deployed)"

@@ -3,7 +3,6 @@ AI-powered remediation guidance generation.
 Supports local models (transformers), Ollama, and cloud APIs.
 """
 
-from typing import Optional
 from dataclasses import dataclass
 
 
@@ -26,7 +25,7 @@ STATIC_REMEDIATION = {
 5. Consider using an ORM (Object-Relational Mapping) framework
 6. Implement Web Application Firewall (WAF) rules for SQL injection patterns
 """,
-    
+
     "cross-site scripting": """
 **Remediation Steps:**
 1. Encode all output based on context (HTML, JavaScript, URL, CSS)
@@ -36,7 +35,7 @@ STATIC_REMEDIATION = {
 5. Use modern frameworks with built-in XSS protection
 6. Implement input length limits where appropriate
 """,
-    
+
     "xss": """
 **Remediation Steps:**
 1. Encode all output based on context (HTML, JavaScript, URL, CSS)
@@ -45,7 +44,7 @@ STATIC_REMEDIATION = {
 4. Validate and sanitize all user input on the server side
 5. Use modern frameworks with built-in XSS protection
 """,
-    
+
     "ssl": """
 **Remediation Steps:**
 1. Upgrade to TLS 1.2 or TLS 1.3 (disable SSLv2, SSLv3, TLS 1.0, TLS 1.1)
@@ -55,7 +54,7 @@ STATIC_REMEDIATION = {
 5. Enable OCSP stapling for certificate validation
 6. Disable compression (CRIME/BREACH attacks)
 """,
-    
+
     "certificate": """
 **Remediation Steps:**
 1. Renew expired certificates before expiration
@@ -65,7 +64,7 @@ STATIC_REMEDIATION = {
 5. Consider Certificate Transparency logging
 6. Use appropriate key sizes (RSA 2048+ or ECDSA 256+)
 """,
-    
+
     "outdated": """
 **Remediation Steps:**
 1. Update the affected software to the latest stable version
@@ -75,7 +74,7 @@ STATIC_REMEDIATION = {
 5. Consider automated update mechanisms where appropriate
 6. Maintain an inventory of software versions in use
 """,
-    
+
     "missing security header": """
 **Remediation Steps:**
 1. Implement Content-Security-Policy (CSP) header
@@ -86,7 +85,7 @@ STATIC_REMEDIATION = {
 6. Add Referrer-Policy header
 7. Consider Permissions-Policy for feature restrictions
 """,
-    
+
     "weak password": """
 **Remediation Steps:**
 1. Enforce minimum password length (12+ characters recommended)
@@ -96,7 +95,7 @@ STATIC_REMEDIATION = {
 5. Check passwords against known breached password lists
 6. Implement multi-factor authentication (MFA)
 """,
-    
+
     "information disclosure": """
 **Remediation Steps:**
 1. Remove sensitive information from error messages
@@ -106,7 +105,7 @@ STATIC_REMEDIATION = {
 5. Review and sanitize API responses
 6. Remove comments containing sensitive information from code
 """,
-    
+
     "directory listing": """
 **Remediation Steps:**
 1. Disable directory listing in web server configuration
@@ -115,7 +114,7 @@ STATIC_REMEDIATION = {
 4. Implement proper access controls
 5. Remove unnecessary files and directories
 """,
-    
+
     "default credentials": """
 **Remediation Steps:**
 1. Change all default passwords immediately
@@ -125,7 +124,7 @@ STATIC_REMEDIATION = {
 5. Implement credential management procedures
 6. Use unique credentials for each system
 """,
-    
+
     "csrf": """
 **Remediation Steps:**
 1. Implement anti-CSRF tokens on all state-changing forms
@@ -134,7 +133,7 @@ STATIC_REMEDIATION = {
 4. Require re-authentication for sensitive actions
 5. Use framework-provided CSRF protection mechanisms
 """,
-    
+
     "open redirect": """
 **Remediation Steps:**
 1. Avoid using user input for redirect destinations
@@ -146,14 +145,14 @@ STATIC_REMEDIATION = {
 }
 
 
-def get_static_remediation(vulnerability_title: str) -> Optional[str]:
+def get_static_remediation(vulnerability_title: str) -> str | None:
     """Get static remediation guidance based on vulnerability title."""
     title_lower = vulnerability_title.lower()
-    
+
     for keyword, guidance in STATIC_REMEDIATION.items():
         if keyword in title_lower:
             return guidance.strip()
-    
+
     return None
 
 
@@ -167,7 +166,7 @@ def generate_remediation(
 ) -> RemediationResult:
     """
     Generate remediation guidance for a vulnerability.
-    
+
     Args:
         title: Vulnerability title
         description: Vulnerability description
@@ -175,7 +174,7 @@ def generate_remediation(
         severity: Vulnerability severity
         asset_type: Type of affected asset
         existing_solution: Existing solution from scanner
-        
+
     Returns:
         RemediationResult with guidance and metadata
     """
@@ -186,7 +185,7 @@ def generate_remediation(
             source="scanner",
             confidence=0.9,
         )
-    
+
     # Try static remediation
     static = get_static_remediation(title)
     if static:
@@ -195,24 +194,24 @@ def generate_remediation(
             source="static",
             confidence=0.8,
         )
-    
+
     # Try AI-based remediation
     try:
         from threat_inspector.config import settings
         engine = settings.remediation.engine.lower()
-        
+
         if engine == "ollama":
             result = _generate_ollama(title, description, cve_id, severity)
             if result:
                 return result
-        
+
         elif engine == "local":
             result = _generate_local(title, description, cve_id, severity)
             if result:
                 return result
     except Exception:
         pass
-    
+
     # Fallback to generic guidance
     return RemediationResult(
         guidance=_generate_generic_guidance(title, severity),
@@ -232,7 +231,7 @@ Severity: {severity}
         prompt += f"CVE: {cve_id}\n"
     if description:
         prompt += f"Description: {description[:500]}\n"
-    
+
     prompt += """
 Provide 5-7 specific remediation steps. Be concise and actionable.
 Format as numbered steps.
@@ -242,21 +241,22 @@ Format as numbered steps.
 
 def _generate_ollama(
     title: str, description: str, cve_id: str, severity: str
-) -> Optional[RemediationResult]:
+) -> RemediationResult | None:
     """Generate remediation using Ollama."""
     try:
         import ollama
+
         from threat_inspector.config import settings
-        
+
         prompt = _build_prompt(title, description, cve_id, severity)
-        
+
         response = ollama.chat(
             model=settings.remediation.ollama_model,
             messages=[{"role": "user", "content": prompt}],
         )
-        
+
         guidance = response["message"]["content"]
-        
+
         return RemediationResult(
             guidance=guidance,
             source="ollama",
@@ -268,19 +268,19 @@ def _generate_ollama(
 
 def _generate_local(
     title: str, description: str, cve_id: str, severity: str
-) -> Optional[RemediationResult]:
+) -> RemediationResult | None:
     """Generate remediation using local transformers model."""
     try:
         from transformers import pipeline
-        
+
         # Use a small model for quick generation
         generator = pipeline("text-generation", model="gpt2", max_length=200)
-        
+
         prompt = f"Security remediation for {title}: "
         result = generator(prompt, num_return_sequences=1)
-        
+
         guidance = result[0]["generated_text"]
-        
+
         return RemediationResult(
             guidance=guidance,
             source="local",
@@ -299,9 +299,9 @@ def _generate_generic_guidance(title: str, severity: str) -> str:
         "low": "Address in next maintenance window. ",
         "info": "Review and assess risk. ",
     }
-    
+
     urgency = severity_actions.get(severity.lower(), "")
-    
+
     return f"""{urgency}
 
 **General Remediation Steps for: {title}**

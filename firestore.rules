@@ -1,0 +1,32 @@
+rules_version = '2';
+
+// Iron City Threat Inspector — multi-tenant Firestore rules.
+//
+// Data is partitioned as clients/{client_id}/scans/{scan_id}. A signed-in user
+// may only read their own client's data. The client_id is asserted on the Auth0
+// -> Firebase custom token as the `client_id` claim (set at token-mint time by
+// the Command Center / Auth0 Action). No cross-tenant reads are possible.
+//
+// Writes come exclusively from the storeScanResults Cloud Function via the Admin
+// SDK, which bypasses these rules. Client apps have NO write access.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function callerClientId() {
+      return request.auth != null ? request.auth.token.client_id : null;
+    }
+
+    match /clients/{clientId} {
+      // A tenant can read only its own client document.
+      allow read: if callerClientId() == clientId;
+      allow write: if false;
+
+      match /scans/{scanId} {
+        // Scans are readable only within the owning tenant.
+        allow read: if callerClientId() == clientId;
+        // All writes go through the Admin SDK (Cloud Function) only.
+        allow write: if false;
+      }
+    }
+  }
+}
