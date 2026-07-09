@@ -53,92 +53,19 @@ jobs:
           echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
           echo "✅ Inputs validated (client: ${{ inputs.client_name }}, target: $TARGET)"
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq openssl curl
-
-      - name: Grade transport security
-        id: grade
-        run: |
-          TARGET="${{ env.target_clean }}"
-          mkdir -p results
-          echo "🔍 Grading transport security for $TARGET"
-          RESPONSE=$(curl -s "https://api.ssllabs.com/api/v3/analyze?host=${TARGET}&startNew=on&all=done")
-          for i in {1..30}; do
-            STATUS=$(echo "$RESPONSE" | jq -r '.status')
-            echo "Status: $STATUS (attempt $i/30)"
-            [ "$STATUS" = "READY" ] && break
-            [ "$STATUS" = "ERROR" ] && { echo "grade=N/A" >> "$GITHUB_OUTPUT"; break; }
-            sleep 10
-            RESPONSE=$(curl -s "https://api.ssllabs.com/api/v3/analyze?host=${TARGET}&all=done")
-          done
-          echo "$RESPONSE" | jq . > results/grade.json 2>/dev/null || echo "{}" > results/grade.json
-          GRADE=$(echo "$RESPONSE" | jq -r '.endpoints[0].grade // "N/A"')
-          echo "grade=$GRADE" >> "$GITHUB_OUTPUT"
-          echo "📊 Grade: $GRADE"
-
-      - name: Check security headers
-        id: headers
-        run: |
-          TARGET="${{ env.target_clean }}"
-          HEADERS=$(curl -sI "https://${TARGET}" 2>/dev/null || curl -sI "http://${TARGET}" 2>/dev/null)
-          echo "$HEADERS" > results/headers.txt
-          MISSING=0
-          for H in Strict-Transport-Security X-Content-Type-Options X-Frame-Options Content-Security-Policy X-XSS-Protection Referrer-Policy; do
-            echo "$HEADERS" | grep -qi "$H" && echo "✅ $H" || { echo "❌ $H"; MISSING=$((MISSING+1)); }
-          done
-          echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
-
-      - name: Check certificate
-        id: cert
-        run: |
-          TARGET="${{ env.target_clean }}"
-          CERT_INFO=$(echo | openssl s_client -servername ${TARGET} -connect ${TARGET}:443 2>/dev/null | openssl x509 -noout -dates 2>/dev/null)
-          echo "$CERT_INFO" > results/cert.txt
-          EXPIRY=$(echo "$CERT_INFO" | grep "notAfter" | cut -d= -f2)
-          EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null || echo "0")
-          DAYS_LEFT=$(( (EXPIRY_EPOCH - $(date +%s)) / 86400 ))
-          echo "days_left=$DAYS_LEFT" >> "$GITHUB_OUTPUT"
-          echo "⏰ Days remaining: $DAYS_LEFT"
-
-      - name: Build findings
+      - name: Run transport security scan
         env:
           TARGET: ${{ env.target_clean }}
           CLIENT_NAME: ${{ inputs.client_name }}
           SCAN_ID: ${{ steps.ids.outputs.scan_id }}
-          GRADE: ${{ steps.grade.outputs.grade }}
-          MISSING: ${{ steps.headers.outputs.missing }}
-          DAYS_LEFT: ${{ steps.cert.outputs.days_left }}
         run: |
-          python3 - <<'PYEOF'
-          import json, os
-          target = os.environ["TARGET"]
-          grade = os.environ.get("GRADE", "N/A")
-          missing = int(os.environ.get("MISSING", "0") or 0)
-          days = int(os.environ.get("DAYS_LEFT", "0") or 0)
-          findings = []
-          if grade and grade not in ("A+", "A", "N/A"):
-              findings.append({"module": "tls_check", "target": target, "severity": "medium",
-                               "title": f"Transport security grade: {grade}",
-                               "detail": "Transport security below recommended grade (A/A+).",
-                               "evidence": {"grade": grade}})
-          if missing:
-              findings.append({"module": "header_security_check", "target": target,
-                               "severity": "low" if missing < 3 else "medium",
-                               "title": f"{missing} recommended security header(s) missing",
-                               "detail": "One or more hardening response headers are absent.",
-                               "evidence": {"missing_count": missing}})
-          if 0 <= days < 30:
-              findings.append({"module": "tls_check", "target": target, "severity": "high",
-                               "title": f"Certificate expires in {days} day(s)",
-                               "detail": "Certificate is near expiry and should be renewed.",
-                               "evidence": {"days_left": days}})
-          out = {"client": os.environ["CLIENT_NAME"], "scan_id": os.environ["SCAN_ID"],
-                 "modules_run": ["tls_check", "header_security_check"],
-                 "target_count": 1, "findings": findings}
-          with open("results/findings.json", "w") as fh:
-              json.dump(out, fh, indent=2)
-          print(f"📊 Findings: {len(findings)}")
-          PYEOF
+          mkdir -p results
+          # Re-housed onto the shared module framework: TLS grade + cert + headers.
+          python3 module_framework/cli.py --modules tls_cert_check,header_security_check \
+            --targets "$TARGET" \
+            --client "$CLIENT_NAME" \
+            --scan-id "$SCAN_ID" > results/findings.json
+          python3 -c "import json;d=json.load(open('results/findings.json'));print('📊 findings:',len(d['findings']))"
 
       - name: Upload findings
         uses: actions/upload-artifact@v4

@@ -11,11 +11,13 @@ Output is JSON on stdout — this is what gets POSTed to consensus-engine and th
 the storeScanResults Cloud Function. Same JSON contract for every tool.
 """
 from __future__ import annotations
+
 import argparse
 import json
 import sys
-from targets import parse_targets
+
 import registry
+from targets import parse_targets
 
 
 def build_parser() -> argparse.ArgumentParser:

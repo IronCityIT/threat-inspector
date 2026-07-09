@@ -1,0 +1,113 @@
+name: Iron City Threat Inspector - Scan
+
+# ============================================================
+# Unified modular scan entry point. One workflow, module/group selection —
+# the same catalog the dashboard renders. Selection maps 1:1 to the CLI:
+#   modules:  run exactly these modules (overrides group)
+#   group:    quick | standard | deep
+# Findings flow through the shared analyze/store pipeline (_consensus-store.yml).
+# White-label: no underlying scanner names appear in client-visible output.
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Domain, URL, or IP to scan'
+        required: true
+      client_name:
+        description: 'Client identifier'
+        required: true
+      scan_id:
+        description: 'Unique scan identifier'
+        required: false
+      modules:
+        description: 'Comma list of modules to run (overrides group)'
+        required: false
+      group:
+        description: 'Named group: quick | standard | deep'
+        required: false
+        default: 'standard'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scan-${{ inputs.client_name }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Modular Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      scan_id: ${{ steps.ids.outputs.scan_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve scan identifiers
+        id: ids
+        run: |
+          if [ -z "${{ inputs.target }}" ]; then echo "❌ target is required"; exit 1; fi
+          if [ -z "${{ inputs.client_name }}" ]; then echo "❌ client_name is required"; exit 1; fi
+          SCAN_ID="${{ inputs.scan_id }}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="ti-${{ github.run_id }}"
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+          echo "✅ Inputs validated (client: ${{ inputs.client_name }}, scan_id: $SCAN_ID)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install scanners
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nmap
+          wget -q https://github.com/projectdiscovery/subfinder/releases/download/v2.6.3/subfinder_2.6.3_linux_amd64.zip -O subfinder.zip
+          unzip -o -q subfinder.zip && chmod +x subfinder && sudo mv subfinder /usr/local/bin/
+          wget -q https://github.com/projectdiscovery/nuclei/releases/download/v3.1.10/nuclei_3.1.10_linux_amd64.zip -O nuclei.zip
+          unzip -o -q nuclei.zip && chmod +x nuclei && sudo mv nuclei /usr/local/bin/
+
+      - name: Run modular scan
+        env:
+          TARGET: ${{ inputs.target }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID: ${{ steps.ids.outputs.scan_id }}
+          MODULES: ${{ inputs.modules }}
+          GROUP: ${{ inputs.group }}
+        run: |
+          mkdir -p results
+          # --modules wins over --group; mirrors registry.select() precedence.
+          if [ -n "$MODULES" ]; then
+            SEL="--modules $MODULES"
+          else
+            SEL="--group ${GROUP:-standard}"
+          fi
+          echo "🔍 Running scan ($SEL)"
+          python3 module_framework/cli.py $SEL \
+            --targets "$TARGET" \
+            --client "$CLIENT_NAME" \
+            --scan-id "$SCAN_ID" > results/findings.json
+          python3 -c "import json;d=json.load(open('results/findings.json'));print('✅ modules:',d['modules_run'],'findings:',len(d['findings']))"
+
+      - name: Upload findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: ti-findings-${{ steps.ids.outputs.scan_id }}
+          path: results/
+          retention-days: 90
+
+  pipeline:
+    name: Analyze & Store
+    needs: scan
+    uses: ./.github/workflows/_consensus-store.yml
+    with:
+      scan_type: modular_scan
+      target: ${{ inputs.target }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ needs.scan.outputs.scan_id }}
+      findings_artifact: ti-findings-${{ needs.scan.outputs.scan_id }}
+    secrets: inherit

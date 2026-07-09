@@ -60,59 +60,18 @@ jobs:
           sudo apt-get install -y nmap
 
       - name: Run port scan
-        run: |
-          TARGET="${{ inputs.target }}"
-          SCAN_TYPE="${{ inputs.scan_type }}"
-          SCAN_ID="${{ steps.ids.outputs.scan_id }}"
-          mkdir -p results
-          echo "🔍 Starting $SCAN_TYPE port scan"
-          case $SCAN_TYPE in
-            quick)
-              nmap -T4 -F --top-ports 100 -oX results/scan.xml -oN results/scan.txt $TARGET ;;
-            full)
-              nmap -T4 -p- -sV -sC -oX results/scan.xml -oN results/scan.txt $TARGET ;;
-            *)
-              nmap -T4 -sV -sC --top-ports 1000 -oX results/scan.xml -oN results/scan.txt $TARGET ;;
-          esac
-          echo "✅ Port scan complete"
-
-      - name: Build findings
         env:
           TARGET: ${{ inputs.target }}
           CLIENT_NAME: ${{ inputs.client_name }}
           SCAN_ID: ${{ steps.ids.outputs.scan_id }}
         run: |
-          python3 - <<'PYEOF'
-          import json, os, re
-          target = os.environ["TARGET"]
-          findings = []
-          try:
-              with open("results/scan.txt") as fh:
-                  for line in fh:
-                      m = re.match(r"(\d+)/(tcp|udp)\s+open\s+(\S+)(.*)", line.strip())
-                      if m:
-                          port, proto, svc, extra = m.groups()
-                          findings.append({
-                              "module": "port_scan",
-                              "target": target,
-                              "severity": "info",
-                              "title": f"Open port {port}/{proto} ({svc})",
-                              "detail": (svc + extra).strip(),
-                              "evidence": {"port": int(port), "protocol": proto, "service": svc},
-                          })
-          except FileNotFoundError:
-              pass
-          out = {
-              "client": os.environ["CLIENT_NAME"],
-              "scan_id": os.environ["SCAN_ID"],
-              "modules_run": ["port_scan"],
-              "target_count": 1,
-              "findings": findings,
-          }
-          with open("results/findings.json", "w") as fh:
-              json.dump(out, fh, indent=2)
-          print(f"📊 Open ports found: {len(findings)}")
-          PYEOF
+          mkdir -p results
+          # Re-housed onto the shared module framework: port discovery + service ID.
+          python3 module_framework/cli.py --modules port_scan,service_fingerprint \
+            --targets "$TARGET" \
+            --client "$CLIENT_NAME" \
+            --scan-id "$SCAN_ID" > results/findings.json
+          python3 -c "import json;d=json.load(open('results/findings.json'));print('📊 findings:',len(d['findings']))"
 
       - name: Upload findings
         uses: actions/upload-artifact@v4
