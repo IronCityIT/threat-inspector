@@ -6,6 +6,7 @@ Accepts single values, comma lists, or files. Classifies each into a kind
 validates. This is what fixes "enter in ips urls etc" — one parser, every tool.
 """
 from __future__ import annotations
+
 import ipaddress
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -56,7 +57,7 @@ def parse_targets(values: list[str] | None = None,
     for v in (values or []):
         tokens.extend(part for part in v.split(",") if part.strip())
     for path in (files or []):
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.split("#", 1)[0].strip()  # strip comments
                 if line:

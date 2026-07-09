@@ -276,3 +276,75 @@ Recorded now so the build phase is scoped; no code touched.
   outward-facing action I will not take unprompted. Left for Bill to dispatch once secrets +
   consensus interface are confirmed. Reporting this rather than fabricating a green run.
 - **Not deployed** — no `firebase deploy` / `gcloud`. Scaffolding only, per the hard stop.
+
+---
+
+# PR 2 — Modular refactor: active scanners (build record)
+
+**Branch:** `productize/threat-inspector-modules` (off `main` after PR 1 merged).
+**Scope decision (Bill):** *active scanners only* — adopt the framework as the runtime,
+re-house the active-scan capabilities as modules, add the active new modules. The `src/`
+file-parser package (nessus/qualys/zap) + `vuln-report.yml` stay as-is; unifying the
+parser paradigm into modules is deferred to a later PR.
+
+## Pre-fix: consensus-engine contract (was assumed in PR 1, now verified)
+PR 1 flagged the `analyze.yml` interface as ASSUMED. Read the real
+`consensus-engine/.github/workflows/analyze.yml`: it requires `findings_json` (base64),
+`product`, `client_id`, `scan_id` + secrets `GROQ/OPENROUTER/GEMINI/IRONCITY_API_KEY`.
+PR 1's call passed `target`/`client_name` and omitted `findings_json` — would have failed.
+`_consensus-store.yml` fixed: new `prep` job packs findings inline as base64, passes the
+real input names; `secrets: inherit` confirmed sufficient. (Also cleared PR 1's ruff/mypy
+debt and fixed a latent `Scan.metadata` reserved-name crash — see commits.)
+
+## Capability inventory (step 1) → module mapping
+Existing active capabilities lived as inline bash/python inside the scan workflows:
+
+| Existing capability (PR 1 workflow) | Became module(s) |
+|---|---|
+| `port-scan.yml` nmap ports          | `port_scan`, `service_fingerprint` |
+| `ssl-grade.yml` SSL Labs + cert + headers | `tls_cert_check`, `header_security_check` |
+| `asset-discovery.yml` subfinder     | `subdomain_enum` |
+| `vuln-report.yml` file aggregation  | *unchanged* — file-parser paradigm, out of scope |
+
+**Newly added modules** (from the Threat Inspector starter set): `cve_lookup`
+(nmap+vulners), `web_vuln_scan` (template scanner, deep-only), `default_creds_check`
+(exposed-management-interface probe; active credential testing deliberately NOT done —
+flagged below).
+
+## What was built
+- `module_framework/modules/` now holds 8 `ScanModule`s + `_util.py` (graceful
+  subprocess/HTTP/TLS helpers). `example_recon.py` deleted.
+- Groups per spec: **quick** = port_scan + tls_cert_check + header_security_check;
+  **standard** = + service_fingerprint + cve_lookup + subdomain_enum + default_creds_check;
+  **deep** = all (incl. web_vuln_scan). Verified via `registry.select()`.
+- Targets accept ip/cidr/url/domain/hostname/file via the framework `targets.py`
+  (unchanged, shared). Selection works both ways: `--modules a,b` and `--group deep`.
+- New unified entry point `.github/workflows/scan.yml` — one workflow, `modules`/`group`
+  inputs → `python3 module_framework/cli.py` → findings.json → `_consensus-store.yml`.
+- The 3 active per-capability workflows (`port-scan`/`ssl-grade`/`asset-discovery`) rewired
+  to call the CLI instead of inline scanning — one runtime, no duplicated logic.
+- Every module degrades gracefully when its scanner/endpoint is absent (returns no
+  findings, never tracebacks) — fixes the old monolith's "traceback on bad input".
+- White-label preserved: tool names (nmap/subfinder/nuclei/vulners) appear only in
+  internal comments and install URLs, never in module `description`, findings, or output.
+
+## Quality gates
+- **ruff** (E,F,I,N,W,UP over `src tests module_framework`): clean.
+- **mypy**: `src/threat_inspector` clean (18 files); `module_framework/modules` clean
+  (10 files, MYPYPATH=module_framework). Fixed the framework's `base.py` `Target`
+  forward-ref via a `TYPE_CHECKING` import (annotation-only, no behavior change).
+- **pytest:** 25 passed (11 parser + 14 new module tests — registry discovery/selection
+  + every module's pure parse function). Coverage of subprocess I/O is intentionally thin;
+  the parse logic (the risk surface) is fully unit-tested.
+- **YAML:** all 6 workflows parse clean.
+
+## Scaffolded vs left for Bill
+- **Dashboard not yet wired to `registry.catalog()`** — deferred to the next PR (the
+  "active scanners only" scope was modules + framework runtime, not UI).
+- **`default_creds_check` is non-intrusive** — it flags exposed management interfaces;
+  it does NOT attempt credential pairs. Active credential testing is a scoped follow-up,
+  not fabricated here.
+- **Dry-run `workflow_dispatch` NOT executed** — would launch a real scan against a live
+  target (outward-facing) and depends on org secrets. Left for Bill, as in PR 1.
+- **Not deployed** — scaffolding only.
+- **No blockers / no missing source.** All capability logic re-housed, none dropped.

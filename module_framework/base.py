@@ -7,10 +7,13 @@ and a run() that returns Findings. Port existing Claude-generated scan logic
 into these — one module per capability, no monoliths.
 """
 from __future__ import annotations
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, asdict
-from typing import Any
 
+from abc import ABC, abstractmethod
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from targets import Target
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 
@@ -43,6 +46,6 @@ class ScanModule(ABC):
         return kind in self.target_kinds
 
     @abstractmethod
-    def run(self, target: "Target", ctx: dict[str, Any]) -> list[Finding]:  # noqa: F821
+    def run(self, target: Target, ctx: dict[str, Any]) -> list[Finding]:
         """Execute against one target. Return a list of Findings (may be empty)."""
         raise NotImplementedError

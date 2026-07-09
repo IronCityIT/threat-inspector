@@ -6,9 +6,11 @@ group. This resolves --modules a,b,c and --group deep into the actual module set
 and powers the dashboard's checkboxes + group presets from the same source.
 """
 from __future__ import annotations
+
 import importlib
 import inspect
 import pkgutil
+
 from base import ScanModule
 
 

@@ -56,61 +56,20 @@ jobs:
         run: |
           wget -q https://github.com/projectdiscovery/subfinder/releases/download/v2.6.3/subfinder_2.6.3_linux_amd64.zip -O subfinder.zip
           unzip -o -q subfinder.zip && chmod +x subfinder && sudo mv subfinder /usr/local/bin/
-          wget -q https://github.com/projectdiscovery/httpx/releases/download/v1.3.7/httpx_1.3.7_linux_amd64.zip -O httpx.zip
-          unzip -o -q httpx.zip && chmod +x httpx && sudo mv httpx /usr/local/bin/
 
-      - name: Enumerate subdomains
-        run: |
-          TARGET="${{ env.target_clean }}"
-          mkdir -p results
-          echo "🔍 Enumerating assets for $TARGET"
-          subfinder -d $TARGET -silent -o results/subdomains.txt || touch results/subdomains.txt
-          echo "📊 Subdomains found: $(wc -l < results/subdomains.txt)"
-
-      - name: Probe live hosts
-        run: |
-          if [ -s results/subdomains.txt ]; then
-            cat results/subdomains.txt | httpx -silent -status-code -title -o results/live-hosts.txt || touch results/live-hosts.txt
-          else
-            touch results/live-hosts.txt
-          fi
-          echo "📊 Live hosts: $(wc -l < results/live-hosts.txt)"
-
-      - name: Build findings
+      - name: Run asset discovery
         env:
           TARGET: ${{ env.target_clean }}
           CLIENT_NAME: ${{ inputs.client_name }}
           SCAN_ID: ${{ steps.ids.outputs.scan_id }}
         run: |
-          python3 - <<'PYEOF'
-          import json, os
-          target = os.environ["TARGET"]
-          subs = []
-          try:
-              with open("results/subdomains.txt") as fh:
-                  subs = [l.strip() for l in fh if l.strip()]
-          except FileNotFoundError:
-              pass
-          live = []
-          try:
-              with open("results/live-hosts.txt") as fh:
-                  live = [l.strip() for l in fh if l.strip()]
-          except FileNotFoundError:
-              pass
-          findings = []
-          for host in live:
-              url = host.split()[0]
-              findings.append({"module": "subdomain_enum", "target": target, "severity": "info",
-                               "title": f"Live asset discovered: {url}",
-                               "detail": "Publicly reachable asset associated with the target domain.",
-                               "evidence": {"host": host}})
-          out = {"client": os.environ["CLIENT_NAME"], "scan_id": os.environ["SCAN_ID"],
-                 "modules_run": ["subdomain_enum"], "target_count": 1, "findings": findings}
-          out["evidence_summary"] = {"subdomains": len(subs), "live_hosts": len(live)}
-          with open("results/findings.json", "w") as fh:
-              json.dump(out, fh, indent=2)
-          print(f"📊 Findings: {len(findings)} (subdomains: {len(subs)}, live: {len(live)})")
-          PYEOF
+          mkdir -p results
+          # Re-housed onto the shared module framework: subdomain enumeration.
+          python3 module_framework/cli.py --modules subdomain_enum \
+            --targets "$TARGET" \
+            --client "$CLIENT_NAME" \
+            --scan-id "$SCAN_ID" > results/findings.json
+          python3 -c "import json;d=json.load(open('results/findings.json'));print('📊 findings:',len(d['findings']))"
 
       - name: Upload findings
         uses: actions/upload-artifact@v4
