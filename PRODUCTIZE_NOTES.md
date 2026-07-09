@@ -348,3 +348,92 @@ flagged below).
   target (outward-facing) and depends on org secrets. Left for Bill, as in PR 1.
 - **Not deployed** — scaffolding only.
 - **No blockers / no missing source.** All capability logic re-housed, none dropped.
+
+---
+
+# PR 3 — File-ingestion aggregation (the product core)
+
+The clunky monolith's *other* half: it doesn't only scan live targets, it ingests
+third-party scan exports a client already has (Qualys, ZAP, Nmap, Nessus) and
+aggregates them into one branded picture. PR 3 re-houses that behind a second
+first-class module type.
+
+## Code review of the existing parsers (required deliverable)
+
+Read every file under `src/threat_inspector/parsers/` — **do not trust the README**.
+Ground truth:
+
+| File | Class | Real? | Formats | Notes |
+|---|---|---|---|---|
+| `qualys.py` | `QualysParser` | ✅ real | .xlsx/.xlsm/.csv | pandas + fuzzy `COLUMN_MAPPINGS`; robust to varied column names |
+| `qualys.py` | `QualysComplianceParser` | ✅ real | .xlsx/.xlsm/.csv | control pass/fail → severity; a distinct 5th parser class |
+| `zap.py` | `ZAPParser` | ✅ real | .xml/.json | risk-code → severity map; HTML-stripping; JSON + XML paths |
+| `nmap.py` | `NmapParser` | ✅ real | .xml/.txt/.nmap | ports + NSE `VULNERABLE`/CVE extraction; severity heuristics |
+| `nessus.py` | `NessusParser` | ✅ real | .nessus/.csv | XML `ReportItem` + CSV; severity 0–4 map |
+| — | **OpenVAS** | ❌ **absent** | — | **No file, no class, no reference.** The README's "5 scanners incl. OpenVAS" is wrong — there are **4 scanner types across 5 parser classes**, and OpenVAS is not among them. Not stubbed; simply does not exist. Flagged, not fabricated. |
+
+Other observations (left as-is — surgical scope):
+- All parsers already normalize severity (`BaseParser.normalize_severity`) and never
+  traceback on a bad row (`except: add_warning`). Good fit for re-housing untouched.
+- `parsers/__init__.py` `get_parser()` does content/filename/extension auto-detection —
+  reused verbatim by the ingest runtime to disambiguate shared extensions (`.csv`).
+- Parsers were **not modified.** PR 3 wraps them; it does not rewrite them.
+
+## What was built
+
+- **New module type `FileModule`** in `module_framework/base.py`, first-class alongside
+  `ScanModule`. Contract is `ingest(file, ctx) -> list[Finding]` — `run(target, ctx)`
+  was **not** bent to swallow files. A `FileModule` declares `extensions` (its analogue
+  of `target_kinds`).
+- **`module_framework/file_modules/`** — one FileModule per parser: `qualys_ingest`,
+  `qualys_compliance_ingest`, `zap_ingest`, `nmap_ingest`, `nessus_ingest`. Each wraps
+  (does not reimplement) its parser via the `ParserFileModule` mixin, and converts
+  `ParsedVulnerability` → `Finding` through the single `_convert.to_findings` seam.
+- **`module_framework/ingest.py`** — the file entry point (passive counterpart to
+  `cli.py`). Same selection model (`--modules` / `--group`, default group `ingest`),
+  `--files` / `--files-dir`. Emits the **same JSON contract**. When >1 selected module
+  accepts a file's extension, it defers to the tool's own content auto-detection so a
+  file is never mis-parsed.
+- **`registry.py`** generalized: `discover_files()` finds FileModules; `select()` /
+  `all_groups()` / `catalog()` work on either type; `catalog()` now tags each entry
+  `kind: "scan"|"file"` and exposes `extensions` for file modules — one source of truth
+  the dashboard renders from.
+- **`.github/workflows/file-scan.yml`** — ingest job → uploads `findings.json` →
+  **the SAME `_consensus-store.yml` reusable pipeline** PR 1 wired
+  (`consensus-engine/analyze.yml@main`). **One findings-JSON path, one AI flow.** No
+  second consensus/AI wiring was added.
+- **DefectDojo = optional export target, not always-on.** A `defectdojo` job that runs
+  ONLY when `defectdojo_export=true` AND the `DEFECTDOJO_*` secrets exist; a missing
+  secret is a `::warning::` + skip, never a failure. It converts findings to DefectDojo's
+  Generic Findings Import format and POSTs to `import-scan`. `django-DefectDojo` (HANDS
+  OFF) is **not** touched — this only calls a client-configured external instance's API.
+
+## White-label
+File-module `description`s and all findings are branded Iron City; the vendor names
+(Qualys/ZAP/Nmap/Nessus) appear only in internal module/parser code and docstrings,
+never in `catalog()` output, findings, or workflow output a client sees.
+
+## Quality gates
+- **ruff** (whole repo): clean.
+- **mypy**: `src` clean (18 files); new framework code clean
+  (`file_modules` + `ingest.py` + `registry.py` + `base.py`, 11 files, MYPYPATH set);
+  existing `modules` still clean (10 files) — no regression.
+- **pytest:** 36 passed (25 prior + 11 new in `tests/test_file_modules.py`: discovery,
+  catalog `kind`/extensions, mixin-not-discovered, conversion + severity clamping,
+  ingest CLI contract, shared-extension disambiguation, error paths).
+- **YAML:** `file-scan.yml` parses clean.
+
+## Left for Bill / flags
+- **New secret names required for the optional DefectDojo export:** `DEFECTDOJO_URL`,
+  `DEFECTDOJO_API_KEY`, `DEFECTDOJO_ENGAGEMENT_ID`. These are **not** in the approved
+  secret list (which covers AI/scanner keys). The export is off by default and no-ops
+  without them, so this does not block the PR — but if you want DefectDojo export live,
+  add these three at the org level. Referenced by name only; never hardcoded.
+- **Dry-run `workflow_dispatch` NOT executed** — needs uploaded export files in the
+  checkout + org secrets, and drives the consensus/store pipeline. Left for Bill, as in
+  PR 1 / PR 2.
+- **Dashboard** still not wired to `registry.catalog()` (now includes file modules) —
+  same deferral as PR 2.
+- **OpenVAS** intentionally NOT added — no source exists to re-house. Building a parser
+  from zero would be fabrication, out of scope. Flagged above.
+- **Not deployed** — scaffolding only. No blockers; no parser logic dropped.

@@ -7,16 +7,38 @@ dedupe, module + group selection, JSON output, clean CLI errors.
 
 ## Files
 - `targets.py`   — parse/normalize/validate targets (IP, CIDR, URL, domain, hostname, files)
-- `base.py`      — `ScanModule` interface + `Finding` dataclass (the contract)
-- `registry.py`  — discover modules, resolve `--modules` / `--group`, build catalog
-- `cli.py`       — CLI entry point; emits the JSON contract for consensus-engine
-- `modules/`     — one file per capability; `example_recon.py` is the reference
+- `base.py`      — `ScanModule` + `FileModule` interfaces + `Finding` dataclass (the contract)
+- `registry.py`  — discover modules of either type, resolve `--modules` / `--group`, build catalog
+- `cli.py`       — active-scan entry point (`run(target, ctx)`); emits the JSON contract
+- `ingest.py`    — file-ingestion entry point (`ingest(file, ctx)`); emits the SAME JSON contract
+- `modules/`     — one file per ACTIVE capability (ScanModule)
+- `file_modules/`— one file per FILE format (FileModule), each wrapping an existing parser
+
+## Two module types (both first-class)
+A capability is one of two shapes. Never bend one into the other.
+
+| Type         | Contract                | Input          | Entry point | Package        |
+|--------------|-------------------------|----------------|-------------|----------------|
+| `ScanModule` | `run(target, ctx)`      | live target    | `cli.py`    | `modules/`     |
+| `FileModule` | `ingest(file, ctx)`     | uploaded file  | `ingest.py` | `file_modules/`|
+
+Both return `list[Finding]` and flow through the identical analyze/store pipeline —
+there is exactly one findings-JSON path and one AI flow. A `FileModule` declares
+`extensions` (instead of `target_kinds`) and re-houses an existing parser; it does
+not reimplement parsing. When several file modules accept the same extension
+(e.g. `.csv`), `ingest.py` uses content auto-detection to route each file to one.
 
 ## Run it
 ```
+# active scanners (live targets)
 python3 cli.py --list-modules
 python3 cli.py --group deep --targets "10.0.0.0/24,https://app.acme.com,acme.com"
 python3 cli.py --modules port_scan,tls_check --targets-file scope.txt --client acme --scan-id 2026-07-08-01
+
+# file ingestion (uploaded scan exports)
+python3 ingest.py --list-modules
+python3 ingest.py --group ingest --files scan1.xml,scan2.csv --client acme --scan-id 2026-07-09-01
+python3 ingest.py --modules qualys_ingest --files-dir uploads/
 ```
 
 ## How to adopt it in a tool (the actual job)
