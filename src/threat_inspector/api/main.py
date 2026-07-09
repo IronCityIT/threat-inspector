@@ -2,14 +2,13 @@
 FastAPI REST API for Threat Inspector.
 """
 
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-import tempfile
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from threat_inspector import ThreatInspector, __version__
@@ -67,8 +66,8 @@ def _whitelabel_source(scanner_type: str) -> str:
 class AnalyzeRequest(BaseModel):
     """Request model for analysis."""
     client_id: str
-    client_name: Optional[str] = "Assessment"
-    project_name: Optional[str] = None
+    client_name: str | None = "Assessment"
+    project_name: str | None = None
     include_remediation: bool = True
     include_compliance: bool = True
 
@@ -77,8 +76,8 @@ class ReportRequest(BaseModel):
     """Request model for report generation."""
     client_id: str
     format: str = "html"
-    client_name: Optional[str] = "Assessment"
-    project_name: Optional[str] = None
+    client_name: str | None = "Assessment"
+    project_name: str | None = None
     include_remediation: bool = True
     include_compliance: bool = True
 
@@ -107,7 +106,7 @@ async def get_supported_formats():
 async def upload_scan(
     client_id: str = Query(..., description="Client identifier for multi-tenant isolation"),
     file: UploadFile = File(...),
-    scanner_type: Optional[str] = Query(None, description="Scan format hint (auto-detected if omitted)"),
+    scanner_type: str | None = Query(None, description="Scan format hint (auto-detected if omitted)"),
 ):
     """
     Upload and parse a vulnerability scan file.
@@ -133,7 +132,7 @@ async def upload_scan(
     try:
         # Parse the file
         result = inspector.load_file(tmp_path, scanner_type)
-        
+
         return {
             "filename": file.filename,
             "source": _whitelabel_source(result.scanner_type),
@@ -152,7 +151,7 @@ async def upload_scan(
 async def analyze_vulnerabilities(request: AnalyzeRequest):
     """
     Analyze all loaded vulnerabilities.
-    
+
     Performs deduplication, enriches with remediation guidance,
     and maps to compliance frameworks.
     """
@@ -178,8 +177,8 @@ async def analyze_vulnerabilities(request: AnalyzeRequest):
 @app.get("/api/v1/vulnerabilities")
 async def get_vulnerabilities(
     client_id: str = Query(..., description="Client identifier for multi-tenant isolation"),
-    severity: Optional[str] = Query(None, description="Filter by severity"),
-    asset: Optional[str] = Query(None, description="Filter by asset"),
+    severity: str | None = Query(None, description="Filter by severity"),
+    asset: str | None = Query(None, description="Filter by asset"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum results"),
     offset: int = Query(0, ge=0, description="Results offset"),
 ):
@@ -217,7 +216,7 @@ async def get_summary(
 async def generate_report(request: ReportRequest):
     """
     Generate a vulnerability report.
-    
+
     Returns the report file for download.
     """
     inspector = get_inspector(request.client_id)
@@ -248,7 +247,7 @@ async def generate_report(request: ReportRequest):
                 include_remediation=request.include_remediation,
                 include_compliance=request.include_compliance,
             )
-            
+
             # Determine media type
             media_types = {
                 "html": "text/html",
@@ -256,7 +255,7 @@ async def generate_report(request: ReportRequest):
                 "csv": "text/csv",
                 "pdf": "application/pdf",
             }
-            
+
             return FileResponse(
                 path=report_path,
                 filename=report_name,

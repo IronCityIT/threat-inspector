@@ -7,17 +7,17 @@ import csv
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
-from .base import BaseParser, ParseResult, ParsedVulnerability
+from .base import BaseParser, ParsedVulnerability, ParseResult
 
 
 class NessusParser(BaseParser):
     """Parser for Nessus scan files."""
-    
+
     SCANNER_TYPE = "nessus"
     SUPPORTED_EXTENSIONS = [".nessus", ".csv"]
-    
+
     # Nessus severity mapping
     SEVERITY_MAP = {
         "0": "info",
@@ -26,39 +26,39 @@ class NessusParser(BaseParser):
         "3": "high",
         "4": "critical",
     }
-    
+
     def parse(self, file_path: Path) -> ParseResult:
         """Parse a Nessus export file."""
         if file_path.suffix.lower() == ".csv":
             return self._parse_csv(file_path)
         return self._parse_nessus(file_path)
-    
+
     def _parse_nessus(self, file_path: Path) -> ParseResult:
         """Parse Nessus XML format (.nessus)."""
         vulnerabilities = []
         scan_date = None
-        metadata = {"source_file": str(file_path), "format": "nessus"}
-        
+        metadata: dict[str, Any] = {"source_file": str(file_path), "format": "nessus"}
+
         try:
             tree = ET.parse(file_path)
             root = tree.getroot()
-            
+
             # Get policy info
             policy = root.find(".//Policy")
             if policy is not None:
                 policy_name = policy.find("policyName")
                 if policy_name is not None:
                     metadata["policy_name"] = policy_name.text
-            
+
             # Parse each report host
             for report_host in root.findall(".//ReportHost"):
                 host_name = report_host.get("name", "")
-                
+
                 # Get host properties
                 host_ip = ""
                 host_fqdn = ""
                 os_info = ""
-                
+
                 for tag in report_host.findall(".//tag"):
                     tag_name = tag.get("name", "")
                     if tag_name == "host-ip":
@@ -69,10 +69,10 @@ class NessusParser(BaseParser):
                         os_info = tag.text or ""
                     elif tag_name == "HOST_START":
                         try:
-                            scan_date = datetime.strptime(tag.text, "%a %b %d %H:%M:%S %Y")
+                            scan_date = datetime.strptime(tag.text or "", "%a %b %d %H:%M:%S %Y")
                         except (ValueError, TypeError):
                             pass
-                
+
                 # Parse report items (vulnerabilities)
                 for item in report_host.findall(".//ReportItem"):
                     try:
@@ -83,12 +83,12 @@ class NessusParser(BaseParser):
                             vulnerabilities.append(vuln)
                     except Exception as e:
                         self.add_warning(f"Error parsing report item: {e}")
-        
+
         except ET.ParseError as e:
             self.add_error(f"XML parse error: {e}")
         except Exception as e:
             self.add_error(f"Failed to parse Nessus file: {e}")
-        
+
         return ParseResult(
             scanner_type=self.SCANNER_TYPE,
             vulnerabilities=vulnerabilities,
@@ -97,32 +97,32 @@ class NessusParser(BaseParser):
             errors=self.errors,
             warnings=self.warnings,
         )
-    
+
     def _parse_report_item(
-        self, item: ET.Element, host_name: str, host_ip: str, 
+        self, item: ET.Element, host_name: str, host_ip: str,
         host_fqdn: str, os_info: str
-    ) -> Optional[ParsedVulnerability]:
+    ) -> ParsedVulnerability | None:
         """Parse a single ReportItem from Nessus XML."""
-        
+
         def get_text(tag: str, default: str = "") -> str:
             elem = item.find(tag)
             return elem.text.strip() if elem is not None and elem.text else default
-        
+
         plugin_name = item.get("pluginName", "")
         if not plugin_name:
             return None
-        
+
         severity_num = item.get("severity", "0")
         severity = self.SEVERITY_MAP.get(severity_num, "info")
-        
+
         # Skip informational by default? No, include all
         port = item.get("port", "0")
         protocol = item.get("protocol", "tcp")
-        
+
         # Get CVE(s)
         cve_elem = item.find("cve")
-        cve_id = cve_elem.text if cve_elem is not None else ""
-        
+        cve_id = (cve_elem.text or "") if cve_elem is not None else ""
+
         # Get CVSS
         cvss_score = None
         cvss_elem = item.find("cvss3_base_score")
@@ -133,7 +133,7 @@ class NessusParser(BaseParser):
                 cvss_score = float(cvss_elem.text)
             except ValueError:
                 pass
-        
+
         return ParsedVulnerability(
             title=plugin_name,
             severity=severity,
@@ -157,16 +157,16 @@ class NessusParser(BaseParser):
                 "exploit_available": get_text("exploit_available"),
             },
         )
-    
+
     def _parse_csv(self, file_path: Path) -> ParseResult:
         """Parse Nessus CSV export format."""
         vulnerabilities = []
-        metadata = {"source_file": str(file_path), "format": "csv"}
-        
+        metadata: dict[str, Any] = {"source_file": str(file_path), "format": "csv"}
+
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
-                
+
                 for row in reader:
                     try:
                         vuln = self._parse_csv_row(row)
@@ -174,10 +174,10 @@ class NessusParser(BaseParser):
                             vulnerabilities.append(vuln)
                     except Exception as e:
                         self.add_warning(f"Error parsing CSV row: {e}")
-        
+
         except Exception as e:
             self.add_error(f"Failed to parse Nessus CSV: {e}")
-        
+
         return ParseResult(
             scanner_type=self.SCANNER_TYPE,
             vulnerabilities=vulnerabilities,
@@ -185,29 +185,29 @@ class NessusParser(BaseParser):
             errors=self.errors,
             warnings=self.warnings,
         )
-    
-    def _parse_csv_row(self, row: dict) -> Optional[ParsedVulnerability]:
+
+    def _parse_csv_row(self, row: dict) -> ParsedVulnerability | None:
         """Parse a single row from Nessus CSV."""
         # Handle various column name formats
         title = (
-            row.get("Name") or 
-            row.get("Plugin Name") or 
-            row.get("name") or 
+            row.get("Name") or
+            row.get("Plugin Name") or
+            row.get("name") or
             ""
         ).strip()
-        
+
         if not title:
             return None
-        
+
         # Get severity
         severity_raw = (
-            row.get("Risk") or 
-            row.get("Severity") or 
-            row.get("risk") or 
+            row.get("Risk") or
+            row.get("Severity") or
+            row.get("risk") or
             "Info"
         )
         severity = self.normalize_severity(severity_raw)
-        
+
         # Get CVSS
         cvss_score = None
         cvss_raw = row.get("CVSS v3.0 Base Score") or row.get("CVSS") or row.get("CVSS v2.0 Base Score")
@@ -216,7 +216,7 @@ class NessusParser(BaseParser):
                 cvss_score = float(cvss_raw)
             except ValueError:
                 pass
-        
+
         # Get port
         port = None
         port_raw = row.get("Port") or row.get("port")
@@ -225,7 +225,7 @@ class NessusParser(BaseParser):
                 port = int(port_raw)
             except ValueError:
                 pass
-        
+
         return ParsedVulnerability(
             title=title,
             severity=severity,
