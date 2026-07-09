@@ -1,0 +1,180 @@
+name: Iron City Threat Inspector - File Ingestion
+
+# ============================================================
+# File-ingestion entry point — the product's aggregation core. Consumes uploaded
+# third-party scan exports (spreadsheet / XML / CSV / .nessus / text), normalizes
+# them into the shared Finding shape via FileModules, and routes the result
+# through the SAME analyze/store pipeline the active scanners use
+# (_consensus-store.yml -> consensus-engine). One findings-JSON path, one AI flow.
+#
+# Selection mirrors the active scan workflow and the dashboard catalog:
+#   modules:  run exactly these file modules (overrides group)
+#   group:    ingest | deep
+#
+# DefectDojo is an OPTIONAL export target (off by default), never always-on infra.
+# White-label: no underlying scanner/vendor names appear in client-visible output.
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      files_path:
+        description: 'Path or directory (in the checkout) holding uploaded scan export(s)'
+        required: true
+      client_name:
+        description: 'Client identifier'
+        required: true
+      scan_id:
+        description: 'Unique scan identifier'
+        required: false
+      modules:
+        description: 'Comma list of file modules to run (overrides group)'
+        required: false
+      group:
+        description: 'Named group: ingest | deep'
+        required: false
+        default: 'ingest'
+      defectdojo_export:
+        description: 'Also export findings to DefectDojo (optional; requires DEFECTDOJO_* secrets)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: file-scan-${{ inputs.client_name }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    name: Ingest Uploaded Exports
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      scan_id: ${{ steps.ids.outputs.scan_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve scan identifiers
+        id: ids
+        run: |
+          if [ -z "${{ inputs.files_path }}" ]; then echo "❌ files_path is required"; exit 1; fi
+          if [ -z "${{ inputs.client_name }}" ]; then echo "❌ client_name is required"; exit 1; fi
+          SCAN_ID="${{ inputs.scan_id }}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="ti-file-${{ github.run_id }}"
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+          echo "✅ Inputs validated (client: ${{ inputs.client_name }}, scan_id: $SCAN_ID)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ingestion dependencies
+        # Only the parser runtime deps — no scanners, no heavy AI stack.
+        run: pip install --quiet pandas openpyxl lxml
+
+      - name: Ingest exports
+        env:
+          FILES_PATH: ${{ inputs.files_path }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID: ${{ steps.ids.outputs.scan_id }}
+          MODULES: ${{ inputs.modules }}
+          GROUP: ${{ inputs.group }}
+        run: |
+          mkdir -p results
+          # --modules wins over --group; mirrors registry.select() precedence.
+          if [ -n "$MODULES" ]; then
+            SEL="--modules $MODULES"
+          else
+            SEL="--group ${GROUP:-ingest}"
+          fi
+          # files_path may be a single file or a directory of exports.
+          if [ -d "$FILES_PATH" ]; then
+            SRC="--files-dir $FILES_PATH"
+          else
+            SRC="--files $FILES_PATH"
+          fi
+          echo "📥 Ingesting ($SEL) from $FILES_PATH"
+          python3 module_framework/ingest.py $SEL $SRC \
+            --client "$CLIENT_NAME" \
+            --scan-id "$SCAN_ID" > results/findings.json
+          python3 -c "import json;d=json.load(open('results/findings.json'));print('✅ modules:',d['modules_run'],'files:',d['file_count'],'skipped:',len(d['files_skipped']),'findings:',len(d['findings']))"
+
+      - name: Upload findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: ti-file-findings-${{ steps.ids.outputs.scan_id }}
+          path: results/
+          retention-days: 90
+
+  pipeline:
+    name: Analyze & Store
+    needs: ingest
+    uses: ./.github/workflows/_consensus-store.yml
+    with:
+      scan_type: file_ingest
+      target: ${{ inputs.files_path }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ needs.ingest.outputs.scan_id }}
+      findings_artifact: ti-file-findings-${{ needs.ingest.outputs.scan_id }}
+    secrets: inherit
+
+  # OPTIONAL export target — runs only when explicitly requested AND the
+  # DefectDojo secrets are configured. Never blocks the run: a missing secret is
+  # a warning, not a failure. This is an export, not always-on infrastructure.
+  defectdojo:
+    name: Export to DefectDojo (optional)
+    needs: ingest
+    if: inputs.defectdojo_export == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          name: ti-file-findings-${{ needs.ingest.outputs.scan_id }}
+          path: incoming
+
+      - name: Convert to DefectDojo generic-findings format
+        run: |
+          python3 - <<'PYEOF'
+          import json, glob
+          matches = glob.glob("incoming/**/findings.json", recursive=True) + glob.glob("incoming/findings.json")
+          data = json.load(open(matches[0])) if matches else {"findings": []}
+          sev_map = {"info": "Info", "low": "Low", "medium": "Medium", "high": "High", "critical": "Critical"}
+          out = {"findings": []}
+          for f in data.get("findings", []):
+              out["findings"].append({
+                  "title": f.get("title", "Finding"),
+                  "severity": sev_map.get(str(f.get("severity", "info")).lower(), "Info"),
+                  "description": f.get("detail", ""),
+                  "mitigation": f.get("evidence", {}).get("solution", ""),
+                  "endpoints": [f.get("target", "")] if f.get("target") else [],
+              })
+          json.dump(out, open("dd-generic.json", "w"))
+          print(f"Prepared {len(out['findings'])} findings for DefectDojo export")
+          PYEOF
+
+      - name: POST to DefectDojo import-scan
+        env:
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+          DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID: ${{ needs.ingest.outputs.scan_id }}
+        run: |
+          if [ -z "$DEFECTDOJO_URL" ] || [ -z "$DEFECTDOJO_API_KEY" ] || [ -z "$DEFECTDOJO_ENGAGEMENT_ID" ]; then
+            echo "::warning::DefectDojo secrets not configured — skipping optional export"
+            exit 0
+          fi
+          curl -sS -X POST "${DEFECTDOJO_URL%/}/api/v2/import-scan/" \
+            -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
+            -F "scan_type=Generic Findings Import" \
+            -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+            -F "scan_date=$(date -u +%Y-%m-%d)" \
+            -F "tags=iron-city,${SCAN_ID}" \
+            -F "file=@dd-generic.json;type=application/json" \
+            && echo "✅ Exported to DefectDojo" \
+            || echo "::warning::DefectDojo export POST failed"
