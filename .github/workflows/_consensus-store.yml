@@ -31,23 +31,15 @@ on:
         type: string
 
 jobs:
-  # AI analysis is the single source of truth — delegated to the shared engine,
-  # never re-implemented here. Input contract assumed per the consensus-engine
-  # README; confirm against IronCityIT/consensus-engine before production use.
-  analyze:
-    name: AI Consensus Analysis
-    uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
-    with:
-      target: ${{ inputs.target }}
-      client_name: ${{ inputs.client_name }}
-      scan_id: ${{ inputs.scan_id }}
-    secrets: inherit
-
-  store:
-    name: Store Results
-    needs: analyze
-    if: always()
+  # The shared engine consumes findings INLINE as base64 (input: findings_json),
+  # not as an artifact, so we pack them here first. This job is also the single
+  # source of truth for client_id (consumed by both analyze and store).
+  prep:
+    name: Prepare findings
     runs-on: ubuntu-latest
+    outputs:
+      findings_json: ${{ steps.pack.outputs.findings_json }}
+      client_id: ${{ steps.ids.outputs.client_id }}
     steps:
       - name: Download findings
         uses: actions/download-artifact@v4
@@ -63,11 +55,50 @@ jobs:
           echo "client_id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
           echo "Resolved client_id: $CLIENT_ID"
 
+      - name: Pack findings as base64
+        id: pack
+        run: |
+          FILE=$(find incoming -name findings.json | head -n1)
+          if [ -z "$FILE" ]; then
+            echo "::warning::findings.json not found in artifact — sending empty findings set"
+            echo '{"findings":[]}' > /tmp/findings.json
+            FILE=/tmp/findings.json
+          fi
+          echo "findings_json=$(base64 -w0 "$FILE")" >> "$GITHUB_OUTPUT"
+
+  # AI analysis is the single source of truth — delegated to the shared engine,
+  # never re-implemented here. Input/secret contract VERIFIED against
+  # IronCityIT/consensus-engine/.github/workflows/analyze.yml@main.
+  analyze:
+    name: AI Consensus Analysis
+    needs: prep
+    uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
+    with:
+      findings_json: ${{ needs.prep.outputs.findings_json }}
+      product: threat-inspector
+      client_id: ${{ needs.prep.outputs.client_id }}
+      scan_id: ${{ inputs.scan_id }}
+    # Engine requires GROQ_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY,
+    # IRONCITY_API_KEY — all provided via the org-level secret inheritance chain.
+    secrets: inherit
+
+  store:
+    name: Store Results
+    needs: [prep, analyze]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.findings_artifact }}
+          path: incoming
+
       - name: Build storeScanResults payload
         env:
           SCAN_TYPE: ${{ inputs.scan_type }}
           SCAN_ID: ${{ inputs.scan_id }}
-          CLIENT_ID: ${{ steps.ids.outputs.client_id }}
+          CLIENT_ID: ${{ needs.prep.outputs.client_id }}
           CLIENT_NAME: ${{ inputs.client_name }}
           TARGET: ${{ inputs.target }}
           CONSENSUS_STATUS: ${{ needs.analyze.result }}
