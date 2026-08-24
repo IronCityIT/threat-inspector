@@ -625,3 +625,98 @@ Scanning ICIT's own domain validates the identical code path.
 5. Pre-existing, unchanged by this PR: the `storeScanResults` ingest endpoint still
    trusts its caller. Hardening it needs a dedicated ingest secret — same
    provisioning decision as (1).
+
+## 6. Dry-run result — RED, and the cause is pre-existing, not this PR
+
+Run: `scan.yml` @ `enhance/actions-ui-20260824`, target `ironcityit.com`,
+`client_name=ironcity`, `scan_id=audit-dryrun`, `group=quick`
+→ https://github.com/IronCityIT/threat-inspector/actions/runs/32785819339
+
+| Job | Result |
+|---|---|
+| Modular Scan | **success** — 5 findings, valid JSON |
+| Analyze & Store / Prepare findings | **success** |
+| Analyze & Store / AI Consensus Analysis | **FAILURE** |
+| Analyze & Store / Store Results | success (warned + skipped) |
+| Report Failure | **success** — the new failure path worked |
+
+Everything this PR changed behaved correctly. The run is red for a reason that
+exists on `main` today and is untouched by this diff.
+
+### Cause 1 — the consensus engine's secrets do not exist
+
+```
+Error when evaluating 'secrets'.
+  Secret GROQ_API_KEY is required, but not provided while calling.
+  Secret OPENROUTER_API_KEY is required, but not provided while calling.
+  Secret GEMINI_API_KEY is required, but not provided while calling.
+  Secret IRONCITY_API_KEY is required, but not provided while calling.
+```
+
+`secrets: inherit` forwards whatever the repo/org actually holds. None of these four
+are present, so the job dies before its first step (0 steps ran, 3s duration).
+`consensus-engine/analyze.yml` declares all four `required: true`.
+
+### Cause 2 — the store endpoint secret is named differently than the workflows read
+
+`gh secret list` on this repo returns exactly one secret: **`FIREBASE_FUNCTION_URL`**.
+Every workflow reads **`STORE_SCAN_RESULTS_URL`**. The dry-run log confirms it resolved
+empty:
+
+```
+  STORE_URL:
+##[warning]STORE_SCAN_RESULTS_URL not set — skipping store (function not yet deployed)
+```
+
+**Implication: no scan result from this product has ever reached Firestore.** The old
+code masked this — it warned and exited 0, so the run went green with nothing stored.
+This PR does not change that outcome (an unset URL is still a warn-and-skip, because
+"not yet deployed" is a legitimate state), but it is now visible rather than hidden.
+
+The workflows were NOT repointed at `FIREBASE_FUNCTION_URL`. That secret's value is not
+readable here, and PHI-touching scan data may only go to `storeScanResults` — pointing
+the pipeline at an unverified endpoint on a guess is exactly the guardrail this rule
+exists to prevent. **Bill decides**, see options below.
+
+### The failure path is verified working
+
+The reporter correctly identified `stage=analyze-store` (scan succeeded, analysis did
+not), kept the caller's `scan_id=audit-dryrun`, resolved `client_id=ironcity`, and built
+valid JSON. It could not deliver, for Cause 2 — and said so loudly instead of silently
+passing:
+
+```
+Failure payload built for scan_id=audit-dryrun client_id=ironcity stage=analyze-store
+payload.json is valid JSON
+##[warning]STORE_SCAN_RESULTS_URL not set — cannot report failure to the dashboard
+```
+
+Once either fix below is applied, this path writes `status:"failed"` and the dashboard
+resolves instead of hanging.
+
+## 7. STOPPED — not merged. Decisions needed from Bill
+
+Per the STOP rules, a red dry-run blocks the merge. The PR is open and waiting.
+
+**Decision A — the store endpoint secret.** Pick one:
+  A1. Set `STORE_SCAN_RESULTS_URL` on the repo to the deployed `storeScanResults`
+      trigger URL. No code change; workflows already read this name. *(recommended —
+      it matches the architecture doc)*
+  A2. Confirm `FIREBASE_FUNCTION_URL` already IS `storeScanResults`, and the workflows
+      get repointed to that name. One-line change per file, but only on Bill's
+      confirmation of what that URL actually resolves to.
+
+**Decision B — the consensus-engine secrets.** `GROQ_API_KEY`, `OPENROUTER_API_KEY`,
+`GEMINI_API_KEY`, `IRONCITY_API_KEY` must be provisioned as org-level secrets (or repo
+secrets) and shared with this repo. All four are on the approved list, so no new secret
+name is being invented — they simply are not present. Until then every scan will fail at
+the analysis stage on every ICIT product that calls the engine, not just this one.
+
+**Decision C — the dispatch token** for `triggerScan` (see section 3). Not on the
+approved list; needs a name and a value from Bill.
+
+Note on B: `IRONCITY_API_KEY` exists because `consensus-engine/analyze.yml` POSTs its
+result to the QNAP Flask API (`api.ironcityit.com/ingest`). That conflicts with the rule
+that scan data goes to Firestore via `storeScanResults` only. Flagged, not touched —
+it lives in the shared core and is a fleet-wide decision. Carried forward to the
+consensus-engine review.
