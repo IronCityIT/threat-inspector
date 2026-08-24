@@ -15,19 +15,28 @@ on:
       target:
         description: 'Domain, URL, or IP to scan'
         required: true
+        type: string
       client_name:
         description: 'Client identifier'
         required: true
+        type: string
       scan_id:
         description: 'Unique scan identifier'
         required: false
+        type: string
       modules:
         description: 'Comma list of modules to run (overrides group)'
         required: false
+        type: string
       group:
-        description: 'Named group: quick | standard | deep'
+        description: 'Named group preset (ignored when modules is set)'
         required: false
+        type: choice
         default: 'standard'
+        options:
+          - quick
+          - standard
+          - deep
 
 permissions:
   contents: read
@@ -49,13 +58,19 @@ jobs:
 
       - name: Resolve scan identifiers
         id: ids
+        env:
+          TARGET: ${{ inputs.target }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID_IN: ${{ inputs.scan_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          if [ -z "${{ inputs.target }}" ]; then echo "❌ target is required"; exit 1; fi
-          if [ -z "${{ inputs.client_name }}" ]; then echo "❌ client_name is required"; exit 1; fi
-          SCAN_ID="${{ inputs.scan_id }}"
-          [ -z "$SCAN_ID" ] && SCAN_ID="ti-${{ github.run_id }}"
+          set -euo pipefail
+          if [ -z "${TARGET:-}" ]; then echo "::error::target is required"; exit 1; fi
+          if [ -z "${CLIENT_NAME:-}" ]; then echo "::error::client_name is required"; exit 1; fi
+          SCAN_ID="${SCAN_ID_IN:-}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="ti-${RUN_ID}"
           echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
-          echo "✅ Inputs validated (client: ${{ inputs.client_name }}, scan_id: $SCAN_ID)"
+          echo "Inputs validated (client: $CLIENT_NAME, scan_id: $SCAN_ID)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -82,16 +97,31 @@ jobs:
           mkdir -p results
           # --modules wins over --group; mirrors registry.select() precedence.
           if [ -n "$MODULES" ]; then
-            SEL="--modules $MODULES"
+            SEL=(--modules "$MODULES")
           else
-            SEL="--group ${GROUP:-standard}"
+            SEL=(--group "${GROUP:-standard}")
           fi
-          echo "🔍 Running scan ($SEL)"
-          python3 module_framework/cli.py $SEL \
+          echo "Running scan (${SEL[*]})"
+          # stderr is kept as a job artifact so a failed run is diagnosable
+          # without re-running the scan.
+          set +e
+          python3 module_framework/cli.py "${SEL[@]}" \
             --targets "$TARGET" \
             --client "$CLIENT_NAME" \
-            --scan-id "$SCAN_ID" > results/findings.json
-          python3 -c "import json;d=json.load(open('results/findings.json'));print('✅ modules:',d['modules_run'],'findings:',len(d['findings']))"
+            --scan-id "$SCAN_ID" > results/findings.json 2> results/scan-stderr.log
+          RC=$?
+          set -e
+          if [ $RC -ne 0 ]; then
+            echo "::error::scan exited with code $RC"
+            echo "--- captured stderr ---"
+            cat results/scan-stderr.log || true
+            exit $RC
+          fi
+          # Validation gate: the findings file is the pipeline's only contract.
+          [ "$(head -c 1 results/findings.json)" = "{" ] || {
+            echo "::error::findings.json does not start with {"; cat results/scan-stderr.log || true; exit 1; }
+          python3 -m json.tool results/findings.json > /dev/null
+          python3 -c "import json;d=json.load(open('results/findings.json'));print('modules:',d['modules_run'],'findings:',len(d['findings']))"
 
       - name: Upload findings
         uses: actions/upload-artifact@v4
@@ -99,6 +129,15 @@ jobs:
           name: ti-findings-${{ steps.ids.outputs.scan_id }}
           path: results/
           retention-days: 90
+
+      - name: Upload scan diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ti-diagnostics-${{ github.run_id }}
+          path: results/scan-stderr.log
+          retention-days: 30
+          if-no-files-found: ignore
 
   pipeline:
     name: Analyze & Store
@@ -110,4 +149,21 @@ jobs:
       client_name: ${{ inputs.client_name }}
       scan_id: ${{ needs.scan.outputs.scan_id }}
       findings_artifact: ti-findings-${{ needs.scan.outputs.scan_id }}
+    secrets: inherit
+
+  # Without this the dashboard would show a scan stuck at "running" forever:
+  # when `scan` fails, `pipeline` is skipped and nothing is ever written.
+  report-failure:
+    name: Report Failure
+    needs: [scan, pipeline]
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    uses: ./.github/workflows/_report-failure.yml
+    with:
+      scan_type: modular_scan
+      target: ${{ inputs.target }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ needs.scan.outputs.scan_id }}
+      run_id: ${{ github.run_id }}
+      scan_id_prefix: ti
+      failed_stage: ${{ needs.scan.result == 'failure' && 'scan' || 'analyze-store' }}
     secrets: inherit

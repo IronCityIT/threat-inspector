@@ -66,18 +66,46 @@ exports.storeScanResults = onRequest(
       summary: body.summary || {},
       findings: Array.isArray(body.findings) ? body.findings : [],
       consensus: body.consensus || null,
+      // Present only on failure records; lets the dashboard render "scan failed"
+      // with a reason instead of leaving the scan pending forever.
+      error: body.error || null,
       created_at: FieldValue.serverTimestamp(),
     };
 
     try {
       // Physically partition by client_id. Firestore rules (firestore.rules)
       // additionally gate dashboard reads to the caller's own client_id.
-      await db
+      const ref = db
         .collection("clients")
         .doc(clientId)
         .collection("scans")
-        .doc(scanId)
-        .set(record, { merge: true });
+        .doc(scanId);
+
+      // Status is monotonic: a scan that already stored findings must never be
+      // downgraded to "failed". The workflows report a failure whenever ANY job
+      // in the run failed, which includes the case where the scan itself
+      // succeeded and only the downstream analysis broke — that run has already
+      // written real findings here, and clobbering them would lose client data.
+      // The failure is still recorded, as a non-fatal error on the record.
+      if (record.status === "failed") {
+        const existing = await ref.get();
+        if (existing.exists && existing.get("status") === "completed") {
+          await ref.set(
+            { error: body.error || { message: "a stage of this run failed" } },
+            { merge: true }
+          );
+          logger.warn("failure report ignored — scan already completed", {
+            client_id: clientId,
+            scan_id: scanId,
+          });
+          res
+            .status(200)
+            .json({ status: "already_completed", client_id: clientId, scan_id: scanId });
+          return;
+        }
+      }
+
+      await ref.set(record, { merge: true });
 
       logger.info("stored scan result", {
         client_id: clientId,

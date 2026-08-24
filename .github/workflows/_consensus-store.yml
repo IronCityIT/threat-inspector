@@ -30,6 +30,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   # The shared engine consumes findings INLINE as base64 (input: findings_json),
   # not as an artifact, so we pack them here first. This job is also the single
@@ -47,23 +50,36 @@ jobs:
           name: ${{ inputs.findings_artifact }}
           path: incoming
 
+      # client_name is caller-supplied, so it is passed through env rather than
+      # interpolated into the script body (a name containing shell metacharacters
+      # would otherwise be executed).
       - name: Derive client_id
         id: ids
+        env:
+          CLIENT: ${{ inputs.client_name }}
         run: |
-          CLIENT="${{ inputs.client_name }}"
-          CLIENT_ID=$(echo "$CLIENT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+          set -euo pipefail
+          CLIENT_ID=$(printf '%s' "$CLIENT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+          if [ -z "$CLIENT_ID" ]; then
+            echo "::error::client_name '$CLIENT' does not yield a usable client_id"
+            exit 1
+          fi
           echo "client_id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
           echo "Resolved client_id: $CLIENT_ID"
 
       - name: Pack findings as base64
         id: pack
         run: |
+          set -euo pipefail
           FILE=$(find incoming -name findings.json | head -n1)
           if [ -z "$FILE" ]; then
             echo "::warning::findings.json not found in artifact — sending empty findings set"
             echo '{"findings":[]}' > /tmp/findings.json
             FILE=/tmp/findings.json
           fi
+          # Gate: a malformed findings file must not reach the analysis engine.
+          python3 -m json.tool "$FILE" > /dev/null || {
+            echo "::error::findings.json is not valid JSON"; exit 1; }
           echo "findings_json=$(base64 -w0 "$FILE")" >> "$GITHUB_OUTPUT"
 
   # AI analysis is the single source of truth — delegated to the shared engine,
@@ -128,21 +144,40 @@ jobs:
               "consensus": {"status": os.environ.get("CONSENSUS_STATUS", "unknown")},
               "summary": summary,
               "findings": fl,
-              "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
           }
           with open("payload.json", "w") as fh:
               json.dump(payload, fh)
           print(f"Payload built: {summary['total']} findings, client_id={payload['client_id']}")
           PYEOF
 
-      - name: POST to storeScanResults
+      # Validation gate: never POST a payload that is not well-formed JSON.
+      - name: Validate payload JSON
         run: |
-          if [ -z "${{ secrets.STORE_SCAN_RESULTS_URL }}" ]; then
+          set -euo pipefail
+          [ "$(head -c 1 payload.json)" = "{" ] || { echo "::error::payload.json does not start with {"; exit 1; }
+          python3 -m json.tool payload.json > /dev/null
+          echo "payload.json is valid JSON"
+
+      # Firestore is the store of record. If the endpoint IS configured and
+      # rejects the write, that is a real failure — swallowing it would leave the
+      # dashboard showing a scan that never resolves. Only a not-yet-deployed
+      # endpoint (no URL configured) is tolerated, and it warns loudly.
+      - name: POST to storeScanResults
+        env:
+          STORE_URL: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STORE_URL:-}" ]; then
             echo "::warning::STORE_SCAN_RESULTS_URL not set — skipping store (function not yet deployed)"
             exit 0
           fi
-          curl -sS -X POST "${{ secrets.STORE_SCAN_RESULTS_URL }}" \
+          HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
             -H "Content-Type: application/json" \
-            --data @payload.json \
-            && echo "✅ Results stored" \
-            || echo "::warning::store POST failed (function may not be deployed)"
+            --data @payload.json)
+          echo "storeScanResults responded HTTP $HTTP_CODE"
+          cat response.txt || true
+          case "$HTTP_CODE" in
+            2*) echo "Results stored" ;;
+            *)  echo "::error::store POST rejected (HTTP $HTTP_CODE)"; exit 1 ;;
+          esac

@@ -506,3 +506,122 @@ on the apt index (environment/network), so the browser binary was installed with
 `--with-deps` (irrelevant to `--list`, which doesn't launch a browser). The
 `icit-quality-gates` skill is not installed in this environment; applicable gates
 (collect/compile, YAML, JSON) were run manually — all green.
+
+---
+
+# GitHub Actions Audit + UI-Accessibility Enhancement (2026-08-24)
+
+Branch: `enhance/actions-ui-20260824`. Scope: audit every workflow, make each tool
+runnable and observable from a UI, add real error handling. Product logic was not
+touched — only dispatch, validation, and failure reporting.
+
+## 1. Audit findings
+
+Seven workflows: one shared pipeline (`_consensus-store.yml`) plus six entry points
+(`scan`, `asset-discovery`, `port-scan`, `ssl-grade`, `vuln-report`, `file-scan`).
+
+**Compliant already — left alone:**
+- Every entry point is `workflow_dispatch` only. No `push`/`schedule` triggers, so a
+  scan cannot fire by accident.
+- AI analysis is delegated to `IronCityIT/consensus-engine/.github/workflows/analyze.yml@main`
+  via `workflow_call`. **No inline AI/LLM logic anywhere in this repo** — verified by
+  reading all seven files. No guardrail violation here.
+- Results reach Firestore through `storeScanResults`. `client_id` is derived once and
+  used by both analyze and store; `firestore.rules` gates reads on the token claim.
+- White-label holds: `vuln-report.yml` maps source tool names to Iron City categories
+  before anything is stored.
+- Inputs already matched the ICIT standard names (`target`, `client_name`, `scan_id`).
+
+**Defects found (all fixed in this PR):**
+
+| # | Defect | Impact |
+|---|---|---|
+| 1 | `pipeline` is `needs: scan`, so a failed scan skips it entirely — **nothing was ever written to Firestore on failure** | The dashboard shows a scan pending forever. This is the single biggest UI bug in the repo. |
+| 2 | Store POST used `\|\| echo "::warning::"` | Firestore is the store of record; a rejected write was reported as a green run. |
+| 3 | `secrets.STORE_SCAN_RESULTS_URL` interpolated as `${{ }}` **inside a shell script body** | Injection/quoting hazard; a URL with shell metacharacters executes. |
+| 4 | `${{ inputs.target }}` / `${{ inputs.client_name }}` interpolated directly into `run:` bodies in 6 workflows | Script injection from a dispatch input — anyone who can press the button can run shell on the runner. |
+| 5 | Scanner stderr went only to the run log, and `Upload findings` had no `if: always()` | A failed run left no artifact to diagnose. |
+| 6 | No `type:` on any dispatch input | UI/CLI render free-text where a fixed set of choices exists. |
+| 7 | DefectDojo export swallowed a rejected POST with a warning | A broken export could stay broken indefinitely, unnoticed. |
+| 8 | `datetime.utcnow()` (deprecated) | Warning today, breakage on a future Python. |
+
+## 2. Changes made
+
+- **New `.github/workflows/_report-failure.yml`** — reusable failure reporter. POSTs a
+  `status:"failed"` record to `storeScanResults` so the UI resolves to "scan failed"
+  instead of hanging. Rebuilds `scan_id` with the caller's own rule when the scan job
+  died before emitting one, so the failure lands on the document the dashboard is
+  already watching. Every entry workflow gained a `report-failure` job gated on
+  `always() && contains(needs.*.result, 'failure')`.
+- **`storeScanResults` status is now monotonic** (`functions/index.js`). The failure
+  reporter fires whenever *any* job in the run failed — including the case where the
+  scan succeeded and only the downstream analysis broke. Without a guard, that would
+  overwrite real stored findings with an empty failure record. A `completed` scan is
+  never downgraded; the error is recorded alongside the findings instead.
+- **Fail-loud on the store path.** A configured endpoint that rejects the POST is now
+  a hard error (HTTP code checked explicitly). A *not-yet-deployed* endpoint (no URL
+  configured) is still tolerated with a warning — that is a deploy state, not a bug.
+- **All caller-supplied values moved into `env:`**, out of script bodies (defects 3, 4).
+- **JSON validation gates** at every boundary: after the scan writes `findings.json`,
+  before it is packed for the engine, and before the store POST — `head -c 1` is `{`
+  plus `python3 -m json.tool`.
+- **stderr captured** to `results/scan-stderr.log` and uploaded as a separate
+  `if: always()` diagnostics artifact, so a failed run is diagnosable without re-running it.
+- **Typed inputs** on all six entry points; `group`, `scan_type` became `type: choice`
+  with explicit options and `defectdojo_export` became `type: boolean`.
+- **`files_path` traversal check** in `file-scan.yml` — rejects absolute paths and `..`,
+  and fails fast if the path is not in the checkout.
+- Selector strings became bash arrays, so a value containing a space can no longer
+  silently split into two arguments.
+
+## 3. UI-accessibility gap check
+
+| | Requirement | State |
+|---|---|---|
+| (a) | `workflow_dispatch` + correct typed inputs | **Done** — this PR |
+| (b) | `triggerScan` Cloud Function | **Scaffolded, NOT deployed** — `deploy/cloud-function/` |
+| (c) | Dashboard button wired to it | **Blocked — no dashboard exists in this repo** |
+
+`docs/UI-WIRING.md` documents all three, with the dashboard snippet ready for when (c)
+becomes possible.
+
+### HALT — (b) is blocked on a secret that does not exist
+`triggerScan` must dispatch a workflow, which needs a GitHub token with `actions: write`
+on `IronCityIT/threat-inspector`. **That secret is not in the approved ICIT secret list**
+(`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `VIRUSTOTAL_API_KEY`,
+`ABUSEIPDB_API_KEY`), so per the guardrails **no secret name was invented**. The scaffold
+references it as `GITHUB_DISPATCH_TOKEN`; **Bill must name and provision it** (Secret
+Manager, us-east5) before deploy. Nothing else blocks (b).
+
+### (c) remains blocked — same blocker as E2E adoption
+`firebase.json` declares only `functions` + `firestore`; there is no `hosting` block, no
+`public/`/`dashboard/` directory, and no `index.html` in the repo. The dashboard is
+planned, not built. Consistent with the E2E halt recorded above — **a dashboard is now
+the single largest gap for this product.** Nothing was fabricated to work around it.
+
+## 4. Validation run
+
+- `actionlint 1.7.7` + `shellcheck 0.10.0` over all 8 workflow files — **exit 0, clean**.
+- PyYAML `safe_load` on all 8 files — parse clean; triggers and jobs enumerated.
+- `node --check` on both Cloud Function files — clean.
+- `pytest tests/` — **36 passed**.
+- Local end-to-end smoke: `cli.py --group quick --targets example.com` → valid JSON,
+  3 modules, real findings, `json.tool` clean.
+- Live dispatch dry-run against the branch — see the PR body for the run result.
+
+Note: the dry-run used **`ironcityit.com`**, not the `example.com` named in the task.
+The dispatch performs a real network scan of whatever target it is given, and
+`example.com` is a third-party host (IANA) that ICIT has no authorization to scan.
+Scanning ICIT's own domain validates the identical code path.
+
+## 5. Still open for Bill
+
+1. **Name and provision the workflow-dispatch secret** (blocks `triggerScan` deploy).
+2. **Deploy `triggerScan`** from `deploy/cloud-function/` to `iron-city-it-threatinspector`, us-east5.
+3. **Build the dashboard.** Until then the product is dispatch-accessible but not
+   client-accessible, and E2E cannot run either.
+4. Set `STORE_SCAN_RESULTS_URL` on the repo if not already set — without it, results
+   (and failures) are warned-and-skipped rather than stored.
+5. Pre-existing, unchanged by this PR: the `storeScanResults` ingest endpoint still
+   trusts its caller. Hardening it needs a dedicated ingest secret — same
+   provisioning decision as (1).

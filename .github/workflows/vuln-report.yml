@@ -12,12 +12,15 @@ on:
       target:
         description: 'Domain, URL, or IP the uploaded scans cover'
         required: true
+        type: string
       client_name:
         description: 'Client identifier'
         required: true
+        type: string
       scan_id:
         description: 'Unique scan identifier'
         required: false
+        type: string
 
 permissions:
   contents: read
@@ -39,14 +42,18 @@ jobs:
 
       - name: Resolve scan identifiers
         id: ids
+        env:
+          TARGET: ${{ inputs.target }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID_IN: ${{ inputs.scan_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          if [ -z "${{ inputs.client_name }}" ]; then
-            echo "❌ ERROR: client_name is required"; exit 1
-          fi
-          SCAN_ID="${{ inputs.scan_id }}"
-          [ -z "$SCAN_ID" ] && SCAN_ID="ti-${{ github.run_id }}"
+          set -euo pipefail
+          if [ -z "${CLIENT_NAME:-}" ]; then echo "::error::client_name is required"; exit 1; fi
+          SCAN_ID="${SCAN_ID_IN:-}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="ti-${RUN_ID}"
           echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
-          echo "✅ Inputs validated (client: ${{ inputs.client_name }}, scan_id: $SCAN_ID)"
+          echo "Inputs validated (client: $CLIENT_NAME, scan_id: $SCAN_ID)"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -62,6 +69,7 @@ jobs:
           CLIENT_NAME: ${{ inputs.client_name }}
           SCAN_ID: ${{ steps.ids.outputs.scan_id }}
         run: |
+          set -euo pipefail
           mkdir -p results
           python3 - <<'PYEOF'
           import os, json, re, yaml
@@ -125,8 +133,14 @@ jobs:
                  "target_count": 1, "findings": findings}
           with open("results/findings.json", "w") as fh:
               json.dump(out, fh, indent=2)
-          print(f"📊 Aggregated {len(findings)} findings")
+          print(f"Aggregated {len(findings)} findings")
           PYEOF
+
+          # Validation gate: the findings file is the pipeline's only contract.
+          [ "$(head -c 1 results/findings.json)" = "{" ] || {
+            echo "::error::findings.json does not start with {"; exit 1; }
+          python3 -m json.tool results/findings.json > /dev/null
+          echo "findings.json is valid JSON"
 
       - name: Upload findings
         uses: actions/upload-artifact@v4
@@ -134,6 +148,15 @@ jobs:
           name: ti-findings-${{ steps.ids.outputs.scan_id }}
           path: results/
           retention-days: 90
+
+      - name: Upload scan diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ti-diagnostics-${{ github.run_id }}
+          path: results/scan-stderr.log
+          retention-days: 30
+          if-no-files-found: ignore
 
   pipeline:
     name: Analyze & Store
@@ -145,4 +168,21 @@ jobs:
       client_name: ${{ inputs.client_name }}
       scan_id: ${{ needs.scan.outputs.scan_id }}
       findings_artifact: ti-findings-${{ needs.scan.outputs.scan_id }}
+    secrets: inherit
+
+  # Without this the dashboard would show a scan stuck at "running" forever:
+  # when `scan` fails, `pipeline` is skipped and nothing is ever written.
+  report-failure:
+    name: Report Failure
+    needs: [scan, pipeline]
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    uses: ./.github/workflows/_report-failure.yml
+    with:
+      scan_type: vulnerability_report
+      target: ${{ inputs.target }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ needs.scan.outputs.scan_id }}
+      run_id: ${{ github.run_id }}
+      scan_id_prefix: ti
+      failed_stage: ${{ needs.scan.result == 'failure' && 'scan' || 'analyze-store' }}
     secrets: inherit
