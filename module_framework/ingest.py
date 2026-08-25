@@ -15,6 +15,7 @@ When more than one selected module accepts a file's extension (e.g. .csv is
 claimed by several), the tool's own content auto-detection breaks the tie so a
 file is never mis-parsed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,22 +39,32 @@ from threat_inspector.parsers import get_parser  # noqa: E402
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="icit-ingest")
-    p.add_argument("--files", action="append", default=[],
-                   help="scan export file(s) (comma-separated, repeatable)")
-    p.add_argument("--files-dir", action="append", default=[],
-                   help="directory of scan exports (recursively globbed by extension)")
+    p.add_argument(
+        "--files",
+        action="append",
+        default=[],
+        help="scan export file(s) (comma-separated, repeatable)",
+    )
+    p.add_argument(
+        "--files-dir",
+        action="append",
+        default=[],
+        help="directory of scan exports (recursively globbed by extension)",
+    )
     sel = p.add_mutually_exclusive_group()
     sel.add_argument("--modules", help="comma list of file-module names to run")
     sel.add_argument("--group", help="named group: ingest | deep | ...")
     p.add_argument("--client", default="", help="client identifier (multi-tenant)")
     p.add_argument("--scan-id", default="", help="unique scan id")
-    p.add_argument("--list-modules", action="store_true",
-                   help="print available file modules and groups, then exit")
+    p.add_argument(
+        "--list-modules",
+        action="store_true",
+        help="print available file modules and groups, then exit",
+    )
     return p
 
 
-def collect_files(files: list[str], dirs: list[str],
-                  known_exts: set[str]) -> list[Path]:
+def collect_files(files: list[str], dirs: list[str], known_exts: set[str]) -> list[Path]:
     """Gather explicit files plus every supported file under each directory."""
     out: list[Path] = []
     seen: set[Path] = set()
@@ -107,8 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     reg = registry.discover_files("file_modules")
 
     if args.list_modules:
-        print(json.dumps({"modules": registry.catalog(reg),
-                          "groups": sorted(registry.all_groups(reg))}, indent=2))
+        print(
+            json.dumps(
+                {"modules": registry.catalog(reg), "groups": sorted(registry.all_groups(reg))},
+                indent=2,
+            )
+        )
         return 0
 
     try:
@@ -140,15 +155,20 @@ def main(argv: list[str] | None = None) -> int:
         findings.extend(f.to_dict() for f in module.ingest(path, ctx))
         ingested.append(str(path))
 
-    print(json.dumps({
-        "client": args.client,
-        "scan_id": args.scan_id,
-        "modules_run": [m.name for m in mods],
-        "file_count": len(ingested),
-        "files_ingested": ingested,
-        "files_skipped": skipped,
-        "findings": findings,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "client": args.client,
+                "scan_id": args.scan_id,
+                "modules_run": [m.name for m in mods],
+                "file_count": len(ingested),
+                "files_ingested": ingested,
+                "files_skipped": skipped,
+                "findings": findings,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

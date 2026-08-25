@@ -5,6 +5,7 @@ Uses nmap's vulners NSE script internally to map detected service versions to
 published CVEs. Self-contained: it fingerprints and correlates in one pass so it
 can run standalone. Branded as a known-vulnerability correlation.
 """
+
 from __future__ import annotations
 
 import re

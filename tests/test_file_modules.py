@@ -7,6 +7,7 @@ test_modules.py we put module_framework/ on sys.path (flat imports), plus src/ s
 the wrapped threat_inspector parsers import. No external tools needed — fixtures
 are tiny synthetic exports written to tmp_path.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -32,6 +33,7 @@ EXPECTED_FILE_MODULES = {
 
 
 # ---- discovery / catalog ------------------------------------------------
+
 
 def test_discovers_all_file_modules():
     reg = registry.discover_files("file_modules")
@@ -62,12 +64,19 @@ def test_ingest_group_present():
 
 # ---- conversion ---------------------------------------------------------
 
+
 def test_to_findings_maps_fields_and_target_precedence():
     result = ParseResult(
         scanner_type="x",
         vulnerabilities=[
-            ParsedVulnerability(title="XSS", severity="high", description="d",
-                                asset_url="https://a/x", asset_ip="10.0.0.1", cve_id="CVE-1"),
+            ParsedVulnerability(
+                title="XSS",
+                severity="high",
+                description="d",
+                asset_url="https://a/x",
+                asset_ip="10.0.0.1",
+                cve_id="CVE-1",
+            ),
             ParsedVulnerability(title="Open port", severity="info", asset_ip="10.0.0.2"),
         ],
         scan_metadata={"source_file": "f.xml"},
@@ -107,16 +116,28 @@ def test_empty_evidence_keys_dropped():
 # ---- ingest CLI end to end ---------------------------------------------
 
 ZAP_JSON = {
-    "site": [{
-        "@name": "https://app.acme.com",
-        "alerts": [
-            {"alert": "SQL Injection", "riskcode": "3", "desc": "<p>SQLi</p>",
-             "solution": "Parameterize", "cweid": "89", "pluginid": "40018",
-             "instances": [{"uri": "https://app.acme.com/login"}]},
-            {"alert": "Info Leak", "riskcode": "0", "desc": "banner",
-             "instances": [{"uri": "https://app.acme.com/"}]},
-        ],
-    }]
+    "site": [
+        {
+            "@name": "https://app.acme.com",
+            "alerts": [
+                {
+                    "alert": "SQL Injection",
+                    "riskcode": "3",
+                    "desc": "<p>SQLi</p>",
+                    "solution": "Parameterize",
+                    "cweid": "89",
+                    "pluginid": "40018",
+                    "instances": [{"uri": "https://app.acme.com/login"}],
+                },
+                {
+                    "alert": "Info Leak",
+                    "riskcode": "0",
+                    "desc": "banner",
+                    "instances": [{"uri": "https://app.acme.com/"}],
+                },
+            ],
+        }
+    ]
 }
 
 
@@ -128,8 +149,9 @@ def _write(tmp_path: Path, name: str, text: str) -> Path:
 
 def test_ingest_cli_emits_contract(tmp_path, capsys):
     f = _write(tmp_path, "zap.json", json.dumps(ZAP_JSON))
-    rc = ingest.main(["--group", "ingest", "--files", str(f),
-                      "--client", "Acme Corp", "--scan-id", "s1"])
+    rc = ingest.main(
+        ["--group", "ingest", "--files", str(f), "--client", "Acme Corp", "--scan-id", "s1"]
+    )
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     # Same contract keys the analyze/store pipeline consumes.

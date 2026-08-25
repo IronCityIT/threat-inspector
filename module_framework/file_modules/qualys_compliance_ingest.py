@@ -4,6 +4,7 @@ qualys_compliance_ingest.py — ingest compliance-control exports (XLSX/XLSM/CSV
 Re-houses QualysComplianceParser (control pass/fail -> severity). White-labeled:
 branded as compliance-control export ingestion.
 """
+
 from __future__ import annotations
 
 from base import FileModule

@@ -5,6 +5,7 @@ Uses nmap service/version detection (-sV) internally. Separate from port_scan so
 a caller can discover ports quickly, then fingerprint only when they want depth;
 cve_lookup consumes the versions this surfaces.
 """
+
 from __future__ import annotations
 
 import re

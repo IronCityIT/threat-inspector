@@ -9,6 +9,7 @@ It is a plain mixin, NOT a FileModule subclass, so registry discovery never pick
 it up on its own — only the concrete `(ParserFileModule, FileModule)` classes are
 real modules.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -26,8 +27,8 @@ if TYPE_CHECKING:
 class ParserFileModule:
     """Mix in ahead of FileModule: `class QualysIngest(ParserFileModule, FileModule)`."""
 
-    name: str                   # provided by the FileModule half
-    PARSER: type[BaseParser]    # set on each concrete subclass
+    name: str  # provided by the FileModule half
+    PARSER: type[BaseParser]  # set on each concrete subclass
 
     def ingest(self, file: Path, ctx: dict[str, Any]) -> list[Finding]:
         result = self.PARSER().parse(file)

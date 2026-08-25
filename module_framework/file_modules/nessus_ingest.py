@@ -3,6 +3,7 @@ nessus_ingest.py — ingest vulnerability scan exports (.nessus/CSV).
 
 Re-houses NessusParser. White-labeled: branded as vulnerability scan ingestion.
 """
+
 from __future__ import annotations
 
 from base import FileModule

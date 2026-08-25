@@ -13,6 +13,7 @@ from pathlib import Path
 @dataclass
 class ParsedVulnerability:
     """Standardized vulnerability data structure."""
+
     title: str
     severity: str  # critical, high, medium, low, info
     description: str = ""
@@ -70,6 +71,7 @@ class ParsedVulnerability:
 @dataclass
 class ParseResult:
     """Result of parsing a scan file."""
+
     scanner_type: str
     vulnerabilities: list[ParsedVulnerability]
     scan_date: datetime | None = None
@@ -140,23 +142,19 @@ class BaseParser(ABC):
             "crit": "critical",
             "4": "critical",
             "urgent": "critical",
-
             # High
             "high": "high",
             "3": "high",
             "serious": "high",
-
             # Medium
             "medium": "medium",
             "med": "medium",
             "moderate": "medium",
             "2": "medium",
-
             # Low
             "low": "low",
             "1": "low",
             "minor": "low",
-
             # Info
             "info": "info",
             "informational": "info",

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 @dataclass
 class ComplianceMapping:
     """Compliance framework mapping for a vulnerability."""
+
     framework: str
     requirement: str
     description: str
@@ -17,7 +18,11 @@ class ComplianceMapping:
 # PCI-DSS v4.0 Mappings
 PCI_DSS_MAPPINGS = {
     "sql injection": [
-        ComplianceMapping("PCI-DSS", "6.2.4", "Software development personnel working on bespoke and custom software are trained at least once every 12 months on secure coding techniques"),
+        ComplianceMapping(
+            "PCI-DSS",
+            "6.2.4",
+            "Software development personnel working on bespoke and custom software are trained at least once every 12 months on secure coding techniques",
+        ),
         ComplianceMapping("PCI-DSS", "6.5.1", "Injection flaws, particularly SQL injection"),
     ],
     "xss": [
@@ -27,31 +32,53 @@ PCI_DSS_MAPPINGS = {
         ComplianceMapping("PCI-DSS", "6.5.7", "Cross-site scripting (XSS)"),
     ],
     "ssl": [
-        ComplianceMapping("PCI-DSS", "4.2.1", "Strong cryptography is used during transmission of cardholder data"),
-        ComplianceMapping("PCI-DSS", "2.2.7", "All non-console administrative access is encrypted using strong cryptography"),
+        ComplianceMapping(
+            "PCI-DSS", "4.2.1", "Strong cryptography is used during transmission of cardholder data"
+        ),
+        ComplianceMapping(
+            "PCI-DSS",
+            "2.2.7",
+            "All non-console administrative access is encrypted using strong cryptography",
+        ),
     ],
     "weak encryption": [
-        ComplianceMapping("PCI-DSS", "3.5.1", "Encryption key management procedures are documented"),
+        ComplianceMapping(
+            "PCI-DSS", "3.5.1", "Encryption key management procedures are documented"
+        ),
         ComplianceMapping("PCI-DSS", "4.2.1", "Strong cryptography is used during transmission"),
     ],
     "outdated": [
-        ComplianceMapping("PCI-DSS", "6.3.3", "Software components are updated to address known vulnerabilities"),
+        ComplianceMapping(
+            "PCI-DSS", "6.3.3", "Software components are updated to address known vulnerabilities"
+        ),
     ],
     "patch": [
-        ComplianceMapping("PCI-DSS", "6.3.3", "Software components are updated to address known vulnerabilities"),
-        ComplianceMapping("PCI-DSS", "11.3.1", "Internal vulnerability scans are performed at least quarterly"),
+        ComplianceMapping(
+            "PCI-DSS", "6.3.3", "Software components are updated to address known vulnerabilities"
+        ),
+        ComplianceMapping(
+            "PCI-DSS", "11.3.1", "Internal vulnerability scans are performed at least quarterly"
+        ),
     ],
     "authentication": [
-        ComplianceMapping("PCI-DSS", "8.3.1", "All user access to system components is authenticated"),
+        ComplianceMapping(
+            "PCI-DSS", "8.3.1", "All user access to system components is authenticated"
+        ),
         ComplianceMapping("PCI-DSS", "8.3.6", "MFA is used for all access into the CDE"),
     ],
     "password": [
         ComplianceMapping("PCI-DSS", "8.3.7", "Password complexity requirements are enforced"),
-        ComplianceMapping("PCI-DSS", "8.3.9", "Passwords/passphrases are changed at least once every 90 days"),
+        ComplianceMapping(
+            "PCI-DSS", "8.3.9", "Passwords/passphrases are changed at least once every 90 days"
+        ),
     ],
     "access control": [
         ComplianceMapping("PCI-DSS", "7.2.1", "Access control system is established"),
-        ComplianceMapping("PCI-DSS", "7.2.2", "Access privileges are assigned based on job classification and function"),
+        ComplianceMapping(
+            "PCI-DSS",
+            "7.2.2",
+            "Access privileges are assigned based on job classification and function",
+        ),
     ],
     "logging": [
         ComplianceMapping("PCI-DSS", "10.2.1", "Audit logs are enabled and active"),
@@ -62,8 +89,12 @@ PCI_DSS_MAPPINGS = {
         ComplianceMapping("PCI-DSS", "1.3.1", "Inbound traffic to the CDE is restricted"),
     ],
     "vulnerability": [
-        ComplianceMapping("PCI-DSS", "11.3.1", "Internal vulnerability scans are performed at least quarterly"),
-        ComplianceMapping("PCI-DSS", "11.3.2", "External vulnerability scans are performed at least quarterly"),
+        ComplianceMapping(
+            "PCI-DSS", "11.3.1", "Internal vulnerability scans are performed at least quarterly"
+        ),
+        ComplianceMapping(
+            "PCI-DSS", "11.3.2", "External vulnerability scans are performed at least quarterly"
+        ),
     ],
 }
 
@@ -100,7 +131,9 @@ HIPAA_MAPPINGS = {
 SOC2_MAPPINGS = {
     "access control": [
         ComplianceMapping("SOC2", "CC6.1", "Logical and physical access controls"),
-        ComplianceMapping("SOC2", "CC6.2", "Prior to issuing system credentials, identity verification"),
+        ComplianceMapping(
+            "SOC2", "CC6.2", "Prior to issuing system credentials, identity verification"
+        ),
     ],
     "authentication": [
         ComplianceMapping("SOC2", "CC6.1", "Logical access security software"),

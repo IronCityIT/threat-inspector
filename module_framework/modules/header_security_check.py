@@ -4,6 +4,7 @@ header_security_check.py — presence of HTTP security response headers.
 Re-housed from the ssl-grade workflow's header step. Passive: one HEAD request,
 flags missing hardening headers.
 """
+
 from __future__ import annotations
 
 from typing import Any

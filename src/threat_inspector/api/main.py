@@ -65,6 +65,7 @@ def _whitelabel_source(scanner_type: str) -> str:
 
 class AnalyzeRequest(BaseModel):
     """Request model for analysis."""
+
     client_id: str
     client_name: str | None = "Assessment"
     project_name: str | None = None
@@ -74,6 +75,7 @@ class AnalyzeRequest(BaseModel):
 
 class ReportRequest(BaseModel):
     """Request model for report generation."""
+
     client_id: str
     format: str = "html"
     client_name: str | None = "Assessment"
@@ -106,7 +108,9 @@ async def get_supported_formats():
 async def upload_scan(
     client_id: str = Query(..., description="Client identifier for multi-tenant isolation"),
     file: UploadFile = File(...),
-    scanner_type: str | None = Query(None, description="Scan format hint (auto-detected if omitted)"),
+    scanner_type: str | None = Query(
+        None, description="Scan format hint (auto-detected if omitted)"
+    ),
 ):
     """
     Upload and parse a vulnerability scan file.
@@ -120,7 +124,7 @@ async def upload_scan(
     if suffix not in SUPPORTED_FORMATS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format: {suffix}. Supported: {list(SUPPORTED_FORMATS.keys())}"
+            detail=f"Unsupported file format: {suffix}. Supported: {list(SUPPORTED_FORMATS.keys())}",
         )
 
     # Save to temp file
@@ -158,8 +162,7 @@ async def analyze_vulnerabilities(request: AnalyzeRequest):
     inspector = get_inspector(request.client_id)
     if not inspector._vulnerabilities:
         raise HTTPException(
-            status_code=400,
-            detail="No vulnerabilities loaded. Upload scan files first."
+            status_code=400, detail="No vulnerabilities loaded. Upload scan files first."
         )
 
     summary = inspector.analyze(
@@ -193,7 +196,7 @@ async def get_vulnerabilities(
     )
 
     # Apply offset
-    vulns = vulns[offset:offset + limit]
+    vulns = vulns[offset : offset + limit]
 
     return {
         "total": len(inspector._vulnerabilities),
@@ -222,8 +225,7 @@ async def generate_report(request: ReportRequest):
     inspector = get_inspector(request.client_id)
     if not inspector._vulnerabilities:
         raise HTTPException(
-            status_code=400,
-            detail="No vulnerabilities loaded. Upload scan files first."
+            status_code=400, detail="No vulnerabilities loaded. Upload scan files first."
         )
 
     # Ensure analysis is complete

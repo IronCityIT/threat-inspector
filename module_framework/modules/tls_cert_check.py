@@ -4,6 +4,7 @@ tls_cert_check.py — transport security grade + certificate health.
 Re-housed from the ssl-grade workflow. Uses the public SSL Labs grading API and
 the platform's own TLS stack (stdlib) internally; branded as transport security.
 """
+
 from __future__ import annotations
 
 import json
@@ -74,9 +75,7 @@ def cert_finding(days_left: int | None, host: str) -> list[Finding]:
 def _days_until(not_after: str) -> int | None:
     """Parse an OpenSSL notAfter string into days from now (UTC)."""
     try:
-        expiry = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(
-            tzinfo=timezone.utc
-        )
+        expiry = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
         return None
     return (expiry - datetime.now(timezone.utc)).days

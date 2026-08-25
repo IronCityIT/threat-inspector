@@ -162,7 +162,11 @@ class ThreatInspector:
         for vuln in self._vulnerabilities:
             mappings = get_compliance_mappings(vuln.title, frameworks)
             vuln.raw_data["compliance_mappings"] = [
-                {"framework": m.framework, "requirement": m.requirement, "description": m.description}
+                {
+                    "framework": m.framework,
+                    "requirement": m.requirement,
+                    "description": m.description,
+                }
                 for m in mappings
             ]
 
@@ -216,7 +220,8 @@ class ThreatInspector:
 
         if asset:
             vulns = [
-                v for v in vulns
+                v
+                for v in vulns
                 if asset.lower() in (v.asset_ip or "").lower()
                 or asset.lower() in (v.asset_name or "").lower()
             ]
@@ -263,8 +268,7 @@ class ThreatInspector:
 
         if format.lower() == "html":
             return self._generate_html_report(
-                output_path, client_name, project_name,
-                include_remediation, include_compliance
+                output_path, client_name, project_name, include_remediation, include_compliance
             )
         elif format.lower() == "json":
             return self._generate_json_report(output_path)
@@ -318,8 +322,15 @@ class ThreatInspector:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         fieldnames = [
-            "title", "severity", "asset_name", "asset_ip", "asset_port",
-            "cve_id", "cvss_score", "description", "solution"
+            "title",
+            "severity",
+            "asset_name",
+            "asset_ip",
+            "asset_port",
+            "cve_id",
+            "cvss_score",
+            "description",
+            "solution",
         ]
 
         with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -327,17 +338,19 @@ class ThreatInspector:
             writer.writeheader()
 
             for vuln in self._vulnerabilities:
-                writer.writerow({
-                    "title": vuln.title,
-                    "severity": vuln.severity,
-                    "asset_name": vuln.asset_name,
-                    "asset_ip": vuln.asset_ip,
-                    "asset_port": vuln.asset_port,
-                    "cve_id": vuln.cve_id,
-                    "cvss_score": vuln.cvss_score,
-                    "description": vuln.description[:500] if vuln.description else "",
-                    "solution": vuln.solution[:500] if vuln.solution else "",
-                })
+                writer.writerow(
+                    {
+                        "title": vuln.title,
+                        "severity": vuln.severity,
+                        "asset_name": vuln.asset_name,
+                        "asset_ip": vuln.asset_ip,
+                        "asset_port": vuln.asset_port,
+                        "cve_id": vuln.cve_id,
+                        "cvss_score": vuln.cvss_score,
+                        "description": vuln.description[:500] if vuln.description else "",
+                        "solution": vuln.solution[:500] if vuln.solution else "",
+                    }
+                )
 
         return output_path
 

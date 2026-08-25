@@ -157,8 +157,16 @@ class NmapParser(BaseParser):
     def _is_vuln_script(self, script_id: str) -> bool:
         """Check if script is a vulnerability detection script."""
         vuln_scripts = [
-            "vulners", "vuln", "exploit", "ssl-heartbleed", "smb-vuln",
-            "http-vuln", "smtp-vuln", "ftp-vuln", "ssh-vuln", "cve"
+            "vulners",
+            "vuln",
+            "exploit",
+            "ssl-heartbleed",
+            "smb-vuln",
+            "http-vuln",
+            "smtp-vuln",
+            "ftp-vuln",
+            "ssh-vuln",
+            "cve",
         ]
         return any(vs in script_id.lower() for vs in vuln_scripts)
 
@@ -252,9 +260,7 @@ class NmapParser(BaseParser):
 
         # Look for VULNERABLE markers
         vuln_matches = re.finditer(
-            r"(VULNERABLE|State: VULNERABLE).*?(?=\n\n|\Z)",
-            block,
-            re.DOTALL | re.IGNORECASE
+            r"(VULNERABLE|State: VULNERABLE).*?(?=\n\n|\Z)", block, re.DOTALL | re.IGNORECASE
         )
 
         for match in vuln_matches:

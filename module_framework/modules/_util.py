@@ -6,6 +6,7 @@ guarantee graceful degradation: a missing tool, a timeout, or an unreachable
 target returns an empty/None result instead of a traceback (the old monolith's
 "tracebacks on bad input" was a called-out rough edge). One place to get this right.
 """
+
 from __future__ import annotations
 
 import shutil

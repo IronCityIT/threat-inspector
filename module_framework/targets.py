@@ -5,6 +5,7 @@ Accepts single values, comma lists, or files. Classifies each into a kind
 (ip, url, domain, hostname), expands CIDR to individual IPs, dedupes, and
 validates. This is what fixes "enter in ips urls etc" — one parser, every tool.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -14,9 +15,9 @@ from urllib.parse import urlparse
 
 @dataclass(frozen=True)
 class Target:
-    raw: str      # what the user typed
-    kind: str     # one of: ip, url, domain, hostname
-    value: str    # normalized value (ip string, url, or host)
+    raw: str  # what the user typed
+    kind: str  # one of: ip, url, domain, hostname
+    value: str  # normalized value (ip string, url, or host)
 
 
 def _classify(token: str) -> list[Target]:
@@ -50,13 +51,12 @@ def _classify(token: str) -> list[Target]:
     return [Target(raw=token, kind="hostname", value=token.lower())]
 
 
-def parse_targets(values: list[str] | None = None,
-                  files: list[str] | None = None) -> list[Target]:
+def parse_targets(values: list[str] | None = None, files: list[str] | None = None) -> list[Target]:
     """Parse from inline values and/or files. Returns deduped, validated Targets."""
     tokens: list[str] = []
-    for v in (values or []):
+    for v in values or []:
         tokens.extend(part for part in v.split(",") if part.strip())
-    for path in (files or []):
+    for path in files or []:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.split("#", 1)[0].strip()  # strip comments

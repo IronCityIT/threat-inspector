@@ -5,6 +5,7 @@ The single mapping every FileModule shares. Keeping it here means the parsers
 stay untouched and the framework's Finding stays generic; only this seam knows
 both shapes.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 @dataclass
 class RemediationResult:
     """Result of remediation generation."""
+
     guidance: str
     source: str  # "local", "ollama", "openai", "anthropic", "static"
     confidence: float = 1.0
@@ -25,7 +26,6 @@ STATIC_REMEDIATION = {
 5. Consider using an ORM (Object-Relational Mapping) framework
 6. Implement Web Application Firewall (WAF) rules for SQL injection patterns
 """,
-
     "cross-site scripting": """
 **Remediation Steps:**
 1. Encode all output based on context (HTML, JavaScript, URL, CSS)
@@ -35,7 +35,6 @@ STATIC_REMEDIATION = {
 5. Use modern frameworks with built-in XSS protection
 6. Implement input length limits where appropriate
 """,
-
     "xss": """
 **Remediation Steps:**
 1. Encode all output based on context (HTML, JavaScript, URL, CSS)
@@ -44,7 +43,6 @@ STATIC_REMEDIATION = {
 4. Validate and sanitize all user input on the server side
 5. Use modern frameworks with built-in XSS protection
 """,
-
     "ssl": """
 **Remediation Steps:**
 1. Upgrade to TLS 1.2 or TLS 1.3 (disable SSLv2, SSLv3, TLS 1.0, TLS 1.1)
@@ -54,7 +52,6 @@ STATIC_REMEDIATION = {
 5. Enable OCSP stapling for certificate validation
 6. Disable compression (CRIME/BREACH attacks)
 """,
-
     "certificate": """
 **Remediation Steps:**
 1. Renew expired certificates before expiration
@@ -64,7 +61,6 @@ STATIC_REMEDIATION = {
 5. Consider Certificate Transparency logging
 6. Use appropriate key sizes (RSA 2048+ or ECDSA 256+)
 """,
-
     "outdated": """
 **Remediation Steps:**
 1. Update the affected software to the latest stable version
@@ -74,7 +70,6 @@ STATIC_REMEDIATION = {
 5. Consider automated update mechanisms where appropriate
 6. Maintain an inventory of software versions in use
 """,
-
     "missing security header": """
 **Remediation Steps:**
 1. Implement Content-Security-Policy (CSP) header
@@ -85,7 +80,6 @@ STATIC_REMEDIATION = {
 6. Add Referrer-Policy header
 7. Consider Permissions-Policy for feature restrictions
 """,
-
     "weak password": """
 **Remediation Steps:**
 1. Enforce minimum password length (12+ characters recommended)
@@ -95,7 +89,6 @@ STATIC_REMEDIATION = {
 5. Check passwords against known breached password lists
 6. Implement multi-factor authentication (MFA)
 """,
-
     "information disclosure": """
 **Remediation Steps:**
 1. Remove sensitive information from error messages
@@ -105,7 +98,6 @@ STATIC_REMEDIATION = {
 5. Review and sanitize API responses
 6. Remove comments containing sensitive information from code
 """,
-
     "directory listing": """
 **Remediation Steps:**
 1. Disable directory listing in web server configuration
@@ -114,7 +106,6 @@ STATIC_REMEDIATION = {
 4. Implement proper access controls
 5. Remove unnecessary files and directories
 """,
-
     "default credentials": """
 **Remediation Steps:**
 1. Change all default passwords immediately
@@ -124,7 +115,6 @@ STATIC_REMEDIATION = {
 5. Implement credential management procedures
 6. Use unique credentials for each system
 """,
-
     "csrf": """
 **Remediation Steps:**
 1. Implement anti-CSRF tokens on all state-changing forms
@@ -133,7 +123,6 @@ STATIC_REMEDIATION = {
 4. Require re-authentication for sensitive actions
 5. Use framework-provided CSRF protection mechanisms
 """,
-
     "open redirect": """
 **Remediation Steps:**
 1. Avoid using user input for redirect destinations
@@ -198,6 +187,7 @@ def generate_remediation(
     # Try AI-based remediation
     try:
         from threat_inspector.config import settings
+
         engine = settings.remediation.engine.lower()
 
         if engine == "ollama":

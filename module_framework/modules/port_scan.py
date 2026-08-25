@@ -4,6 +4,7 @@ port_scan.py — reachable TCP ports and listening services.
 Re-housed from the former port-scan workflow's inline nmap logic. nmap is used
 internally; the capability is branded as network port discovery on any surface.
 """
+
 from __future__ import annotations
 
 import re

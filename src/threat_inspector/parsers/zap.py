@@ -225,6 +225,7 @@ class ZAPParser(BaseParser):
         if not text:
             return ""
         import re
+
         clean = re.sub(r"<[^>]+>", "", text)
         clean = clean.replace("&lt;", "<").replace("&gt;", ">")
         clean = clean.replace("&amp;", "&").replace("&quot;", '"')

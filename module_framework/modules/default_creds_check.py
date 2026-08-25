@@ -7,6 +7,7 @@ reachable ones so they can be checked for default credentials. It is deliberatel
 non-intrusive: it does NOT attempt credential pairs. Active credential testing is
 a scoped follow-up (see PRODUCTIZE_NOTES.md) — not fabricated here.
 """
+
 from __future__ import annotations
 
 from typing import Any

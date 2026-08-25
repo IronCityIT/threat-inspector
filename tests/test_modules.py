@@ -5,6 +5,7 @@ The framework runs with `module_framework/` on sys.path (flat imports: `base`,
 `registry`, `modules.*`), so we put it on the path here and exercise each module's
 pure parse function plus registry discovery/selection. No external scanners needed.
 """
+
 import sys
 from pathlib import Path
 
@@ -70,6 +71,7 @@ def test_select_unknown_module_raises():
 
 
 # ---- pure parsers -------------------------------------------------------
+
 
 def test_port_scan_parse():
     raw = "22/tcp open ssh\n80/tcp open http\nnot a port line\n443/tcp closed https"

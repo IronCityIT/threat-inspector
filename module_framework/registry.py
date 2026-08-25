@@ -11,6 +11,7 @@ class; select()/all_groups()/catalog() are structural and work on either — a m
 of either type has a `name` and `groups`. catalog() tags each entry with its `kind`
 so the dashboard renders active scanners and file-ingest modules from one source.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -56,10 +57,12 @@ def all_groups(reg: dict[str, M]) -> set[str]:
     return {g for m in reg.values() for g in m.groups}
 
 
-def select(reg: dict[str, M],
-           modules: list[str] | None = None,
-           group: str | None = None,
-           default_group: str = "standard") -> list[M]:
+def select(
+    reg: dict[str, M],
+    modules: list[str] | None = None,
+    group: str | None = None,
+    default_group: str = "standard",
+) -> list[M]:
     """Resolve a selection. --modules wins if given; else --group; else default_group.
 
     Works for either module type — file ingestion passes default_group='ingest'.
