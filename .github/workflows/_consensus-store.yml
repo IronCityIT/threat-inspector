@@ -159,18 +159,20 @@ jobs:
           python3 -m json.tool payload.json > /dev/null
           echo "payload.json is valid JSON"
 
-      # Firestore is the store of record. If the endpoint IS configured and
-      # rejects the write, that is a real failure — swallowing it would leave the
-      # dashboard showing a scan that never resolves. Only a not-yet-deployed
-      # endpoint (no URL configured) is tolerated, and it warns loudly.
+      # Firestore is the store of record, so this step FAILS CLOSED. An
+      # unconfigured endpoint used to `exit 0` with a warning, which meant every
+      # scan silently discarded its findings and still reported success — the
+      # run went green while the client's results went nowhere. A scan that
+      # cannot be stored is a failed scan, and it says so.
       - name: POST to storeScanResults
         env:
           STORE_URL: ${{ secrets.STORE_SCAN_RESULTS_URL }}
         run: |
           set -euo pipefail
           if [ -z "${STORE_URL:-}" ]; then
-            echo "::warning::STORE_SCAN_RESULTS_URL not set — skipping store (function not yet deployed)"
-            exit 0
+            echo "::error::STORE_SCAN_RESULTS_URL is not set — results cannot be stored."
+            echo "Deploy the function (deploy-functions.yml) and set the secret to its URL."
+            exit 1
           fi
           HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
             -H "Content-Type: application/json" \

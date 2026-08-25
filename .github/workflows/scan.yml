@@ -37,6 +37,11 @@ on:
           - quick
           - standard
           - deep
+      dry_run:
+        description: 'Validate targets and selection without scanning anything'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -93,6 +98,7 @@ jobs:
           SCAN_ID: ${{ steps.ids.outputs.scan_id }}
           MODULES: ${{ inputs.modules }}
           GROUP: ${{ inputs.group }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           mkdir -p results
           # --modules wins over --group; mirrors registry.select() precedence.
@@ -101,6 +107,9 @@ jobs:
           else
             SEL=(--group "${GROUP:-standard}")
           fi
+          # A dry run exercises the whole pipeline — selection, JSON schema,
+          # consensus call, store POST — without a packet reaching a live host.
+          if [ "$DRY_RUN" = "true" ]; then SEL+=(--dry-run); fi
           echo "Running scan (${SEL[*]})"
           # stderr is kept as a job artifact so a failed run is diagnosable
           # without re-running the scan.

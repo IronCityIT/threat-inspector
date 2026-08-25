@@ -43,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--list-modules", action="store_true", help="print available modules and groups, then exit"
     )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate targets and module selection, then exit without "
+        "running any module (no network traffic, no findings)",
+    )
     return p
 
 
@@ -76,11 +82,24 @@ def main(argv: list[str] | None = None) -> int:
 
     ctx = {"client": args.client, "scan_id": args.scan_id}
     findings: list[dict] = []
-    for t in targets:
-        for m in mods:
-            if m.applies_to(t.kind):
-                findings.extend(f.to_dict() for f in m.run(t, ctx))
+    # THE GUARD. m.run() is the only place a module touches the network, so a dry
+    # run stops exactly here — after targets and selection have been validated for
+    # real, before anything reaches a live host. Emitting an empty findings set is
+    # the honest result: nothing was scanned, so nothing was found.
+    if not args.dry_run:
+        for t in targets:
+            for m in mods:
+                if m.applies_to(t.kind):
+                    findings.extend(f.to_dict() for f in m.run(t, ctx))
+    else:
+        print(
+            f"dry-run: validated {len(targets)} target(s) and "
+            f"{len(mods)} module(s); no module executed",
+            file=sys.stderr,
+        )
 
+    # Schema is identical either way so every downstream consumer (workflow jq,
+    # payload builder, dashboard) exercises the same path in a dry run.
     print(
         json.dumps(
             {
@@ -88,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
                 "scan_id": args.scan_id,
                 "modules_run": [m.name for m in mods],
                 "target_count": len(targets),
+                "dry_run": args.dry_run,
                 "findings": findings,
             },
             indent=2,

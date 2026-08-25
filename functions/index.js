@@ -9,18 +9,19 @@
  *
  * Region: us-east5 (Columbus) — ICIT standard, no exceptions.
  *
- * NOTE (deploy is intentionally NOT performed by the agent): this is scaffolding
- * only. Bill deploys. The ingest endpoint currently trusts the caller; hardening
- * it with a dedicated ingest secret is flagged in PRODUCTIZE_NOTES.md (a new
- * secret name must be provisioned — not invented here).
+ * Deployed by .github/workflows/deploy-functions.yml. The ingest endpoint
+ * currently trusts its caller; hardening it with a dedicated ingest secret is
+ * flagged in PRODUCTIZE_NOTES.md (a new secret name must be provisioned — not
+ * invented here).
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
-const { initializeApp } = require("firebase-admin/app");
+const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 
-initializeApp();
+// Guarded: trigger.js is loaded from this same deploy and also initialises.
+if (!getApps().length) initializeApp();
 const db = getFirestore();
 
 const REGION = "us-east5";
@@ -121,3 +122,8 @@ exports.storeScanResults = onRequest(
     }
   }
 );
+
+// triggerScan lives in trigger.js but must be exported from the functions entry
+// point, otherwise `firebase deploy --only functions` would ship storeScanResults
+// alone and the dashboard would have nothing to call.
+exports.triggerScan = require("./trigger").triggerScan;

@@ -579,7 +579,7 @@ Seven workflows: one shared pipeline (`_consensus-store.yml`) plus six entry poi
 | | Requirement | State |
 |---|---|---|
 | (a) | `workflow_dispatch` + correct typed inputs | **Done** — this PR |
-| (b) | `triggerScan` Cloud Function | **Scaffolded, NOT deployed** — `deploy/cloud-function/` |
+| (b) | `triggerScan` Cloud Function | **Built** — `functions/trigger.js`, deploy via `deploy-functions.yml` |
 | (c) | Dashboard button wired to it | **Blocked — no dashboard exists in this repo** |
 
 `docs/UI-WIRING.md` documents all three, with the dashboard snippet ready for when (c)
@@ -617,7 +617,7 @@ Scanning ICIT's own domain validates the identical code path.
 ## 5. Still open for Bill
 
 1. **Name and provision the workflow-dispatch secret** (blocks `triggerScan` deploy).
-2. **Deploy `triggerScan`** from `deploy/cloud-function/` to `iron-city-it-threatinspector`, us-east5.
+2. **Deploy `triggerScan`** from `functions/trigger.js` to `iron-city-it-threatinspector`, us-east5.
 3. **Build the dashboard.** Until then the product is dispatch-accessible but not
    client-accessible, and E2E cannot run either.
 4. Set `STORE_SCAN_RESULTS_URL` on the repo if not already set — without it, results
@@ -720,3 +720,96 @@ result to the QNAP Flask API (`api.ironcityit.com/ingest`). That conflicts with 
 that scan data goes to Firestore via `storeScanResults` only. Flagged, not touched —
 it lives in the shared core and is a fleet-wide decision. Carried forward to the
 consensus-engine review.
+
+---
+
+# Deploy pipeline — functions, rules, and fail-closed storage
+
+**Date:** 2026-08-25 · Branch `productize/threat-inspector-deploy`
+
+## The bug this closes
+
+`_consensus-store.yml` ended with:
+
+```bash
+if [ -z "$STORE_URL" ]; then
+  echo "::warning::STORE_SCAN_RESULTS_URL not set — skipping store"
+  exit 0
+fi
+```
+
+`STORE_SCAN_RESULTS_URL` has never been set on this repo. So **every scan this product
+has ever run discarded its findings at the last step and reported success.** Confirmed in
+run `32785819339`: `! STORE_SCAN_RESULTS_URL not set — skipping store`. A green run meant
+nothing about whether the client's results existed.
+
+That step now **fails closed**. A scan that cannot be stored is a failed scan.
+
+## What changed
+
+| File | Change |
+|---|---|
+| `.github/workflows/deploy-functions.yml` | **New.** Deploys functions + Firestore rules to `iron-city-it-threatinspector` / `us-east5`. `dry_run: true` by default. |
+| `.github/workflows/_consensus-store.yml` | Store step fails closed instead of `exit 0`. |
+| `.github/workflows/scan.yml` | New `dry_run` boolean input, wired to the CLI's `--dry-run`. |
+| `module_framework/cli.py` | `--dry-run`: validates targets + selection, then stops before any module runs. Identical output schema, `dry_run: true`, empty findings. |
+| `functions/trigger.js` | Moved from `deploy/cloud-function/index.js`. |
+| `functions/index.js` | Guards `initializeApp`, re-exports `triggerScan`. |
+
+**Why the move matters:** `firebase.json` points `functions.source` at `functions/`. `triggerScan`
+lived in `deploy/cloud-function/`, which is **not** part of that source — so
+`firebase deploy --only functions` would have shipped `storeScanResults` alone and the
+dashboard's trigger would have 404'd. One source, one deploy, both functions.
+
+## Why `--dry-run` exists
+
+The chain is scan → consensus → store, and the only way to prove it end to end used to be
+scanning a live host. `--dry-run` stops in `main()` exactly where `m.run()` would touch the
+network, after real target parsing and module selection. Downstream (workflow JSON gates,
+payload builder, dashboard) sees the identical schema, so the whole pipeline is exercised
+with zero packets sent. Verified locally:
+
+```
+$ python3 module_framework/cli.py --group quick --targets example.com --dry-run
+{"client":"acme","scan_id":"t1","modules_run":["header_security_check","port_scan",
+ "tls_cert_check"],"target_count":1,"dry_run":true,"findings":[]}
+```
+
+## Quality gates
+
+| Gate | Command | Result |
+|---|---|---|
+| Lint | `ruff check .` | ✅ All checks passed |
+| Typecheck | `mypy module_framework src` | ✅ 41 files, no issues |
+| Tests | `pytest -q` | ✅ 36 passed |
+| YAML | `yaml.safe_load` × 9 workflows | ✅ all parse |
+| JS syntax | `node --check` × 2 | ✅ both parse |
+| JSON | `json.load` on package manifests | ✅ valid |
+| Format | `ruff format --check` | ❌ **34 files would reformat** — pre-existing across the repo, not introduced here. Left alone deliberately: reformatting 34 files inside a deploy PR would bury the change. Wants its own PR. |
+
+## BLOCKERS — deploy cannot complete without these
+
+1. **`FIREBASE_SERVICE_ACCOUNT` does not exist on this repo.** Confirmed via `gh secret list`.
+   The deploy workflow fails fast on step 1 with instructions rather than half-deploying.
+   Needs: service account on `iron-city-it-threatinspector` with Cloud Functions Developer,
+   Firebase Rules Admin, Service Account User, Artifact Registry Writer; JSON key stored as
+   that secret. **The agent cannot create this** — no `gcloud`/`firebase` CLI exists in the
+   build environment and no GCP credentials are present.
+2. **`STORE_SCAN_RESULTS_URL`** must be set after the first real deploy. The deploy workflow
+   prints the exact URL in its job summary.
+3. **`GITHUB_DISPATCH_TOKEN`** (Secret Manager, us-east5) for `triggerScan`. Still outstanding
+   from PR #5. Not in the approved secret list, so the name is referenced, never a value.
+
+## Consensus egress — still open, tracked separately
+
+Threat Inspector passes a `scan_id` on every run, and the shared engine POSTs its consensus
+output to `api.ironcityit.com/ingest` whenever `scan_id` is non-empty. That conflicts with
+storeScanResults-to-Firestore-only. Fixed by **consensus-engine PR #2** (`post_to_api` opt-out
++ `consensus_b64` output), which is REVIEW ONLY and awaiting Bill.
+
+**This repo is deliberately NOT wired to `post_to_api: false` yet** — products pin the engine
+at `@main`, so passing an input that `main` does not declare would fail every scan immediately.
+That wiring is a follow-up PR, blocked on engine PR #2 merging.
+
+**Do not run a live scan with real client data until engine PR #2 is merged and TI is wired
+to it.** Dry runs are safe now.
