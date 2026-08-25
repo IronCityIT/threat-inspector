@@ -1,5 +1,5 @@
 /**
- * Iron City Threat Inspector — triggerScan Cloud Function (SCAFFOLD, NOT DEPLOYED)
+ * Iron City Threat Inspector — triggerScan Cloud Function
  *
  * Closes UI-accessibility gap (b): the dashboard cannot start a scan without a
  * server-side trigger, because dispatching a GitHub workflow requires a token
@@ -22,12 +22,12 @@
  * from the request body. A caller cannot queue a scan into another tenant.
  *
  * ---------------------------------------------------------------------------
- * HALT — BLOCKED ON A SECRET THAT DOES NOT EXIST YET.
+ * REQUIRES A SECRET BILL MUST PROVISION.
  * Dispatching a workflow needs a GitHub token with `actions:write` on
- * IronCityIT/threat-inspector. That secret is NOT in the approved ICIT secret
- * list, so its name has NOT been invented here — it is referenced below as
- * GITHUB_DISPATCH_TOKEN and Bill must provision it (Secret Manager, us-east5)
- * before this function is deployed. See PRODUCTIZE_NOTES.md.
+ * IronCityIT/threat-inspector. That secret is not in the approved ICIT list, so
+ * its value is not invented here — it is referenced as GITHUB_DISPATCH_TOKEN and
+ * must exist in Secret Manager (us-east5) before this function will deploy.
+ * See PRODUCTIZE_NOTES.md.
  * ---------------------------------------------------------------------------
  */
 

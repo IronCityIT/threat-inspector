@@ -1,0 +1,130 @@
+name: Iron City Threat Inspector - Deploy Functions
+
+# ============================================================
+# Deploys the Cloud Functions (storeScanResults + triggerScan) and the Firestore
+# security rules to the product's OWN project, in us-east5.
+#
+# dry_run: true (the default) authenticates, installs, and syntax-checks
+# everything, then STOPS without deploying. Run it that way first — a green dry
+# run is the evidence that a real deploy will not fail on credentials.
+#
+# After a real deploy, the storeScanResults URL is printed in the summary. That
+# URL must be set as the STORE_SCAN_RESULTS_URL repo secret, or the scan
+# pipeline will refuse to run (see _consensus-store.yml).
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate credentials and build only — do not deploy'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-functions
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: iron-city-it-threatinspector
+  GCP_REGION: us-east5
+
+jobs:
+  deploy:
+    name: Deploy Functions & Rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify deploy credential is present
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SA" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT is not set on this repository."
+            echo "Provision a service account on ${GCP_PROJECT} with Cloud Functions Developer,"
+            echo "Firebase Rules Admin, Service Account User, and Artifact Registry Writer,"
+            echo "then store its JSON key as the FIREBASE_SERVICE_ACCOUNT repo secret."
+            exit 1
+          fi
+          echo "✅ Deploy credential present"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install function dependencies
+        working-directory: functions
+        run: npm ci || npm install
+
+      - name: Syntax-check functions
+        working-directory: functions
+        run: |
+          node --check index.js
+          node --check trigger.js
+          echo "✅ Functions parse clean"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@13
+
+      - name: Confirm project access
+        run: |
+          firebase projects:list --json > /tmp/projects.json
+          python3 - <<'PY'
+          import json, sys
+          data = json.load(open("/tmp/projects.json"))
+          ids = [p.get("projectId") for p in (data.get("result") or [])]
+          want = "iron-city-it-threatinspector"
+          print("Visible projects:", ", ".join(ids) or "(none)")
+          if want not in ids:
+              print(f"::error::service account cannot see {want}")
+              sys.exit(1)
+          print(f"✅ {want} reachable")
+          PY
+
+      - name: Dry run — stop before deploying
+        if: inputs.dry_run
+        run: |
+          echo "### Dry run complete — nothing deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Credentials, project access, dependencies and syntax all verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run with \`dry_run: false\` to deploy." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy functions and Firestore rules
+        if: ${{ !inputs.dry_run }}
+        run: |
+          firebase deploy \
+            --only functions,firestore:rules \
+            --project "$GCP_PROJECT" \
+            --non-interactive \
+            --force
+
+      - name: Report storeScanResults URL
+        if: ${{ !inputs.dry_run }}
+        run: |
+          URL="https://${GCP_REGION}-${GCP_PROJECT}.cloudfunctions.net/storeScanResults"
+          {
+            echo "### Deployed to \`${GCP_PROJECT}\` (${GCP_REGION})"
+            echo ""
+            echo "Set this as the **STORE_SCAN_RESULTS_URL** repo secret:"
+            echo ""
+            echo '```'
+            echo "$URL"
+            echo '```'
+            echo ""
+            echo "Until that secret is set, the scan pipeline fails closed rather than"
+            echo "discarding results."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "storeScanResults: $URL"

@@ -7,7 +7,7 @@ A tool counts as "accessible from the UI" only when all three of these hold:
 | | Requirement | State |
 |---|---|---|
 | (a) | `workflow_dispatch` with correct typed inputs | **Done** — all 6 workflows, in this repo |
-| (b) | A trigger Cloud Function (`triggerScan`) | **Scaffolded** — `deploy/cloud-function/`, **not deployed**, blocked on a secret |
+| (b) | A trigger Cloud Function (`triggerScan`) | **Scaffolded** — `functions/trigger.js`, deployed by `deploy-functions.yml`, needs `GITHUB_DISPATCH_TOKEN` |
 | (c) | A dashboard button/route wired to that function | **Blocked** — this repo has no dashboard |
 
 ## (a) Dispatchable workflows
@@ -36,7 +36,7 @@ python3 module_framework/cli.py --list-modules
 
 ## (b) Trigger Cloud Function — scaffolded, NOT deployed
 
-`deploy/cloud-function/index.js` implements `triggerScan` as an `onCall` function in
+`functions/trigger.js` implements `triggerScan` as an `onCall` function in
 **us-east5**. It:
 
 1. reads `client_id` from the **verified auth token claim** (never the request body,
