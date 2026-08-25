@@ -1,8 +1,9 @@
-name: Iron City Threat Inspector - Deploy Functions
+name: Iron City Threat Inspector - Deploy
 
 # ============================================================
-# Deploys the Cloud Functions (storeScanResults + triggerScan) and the Firestore
-# security rules to the product's OWN project, in us-east5.
+# Deploys the Cloud Functions (storeScanResults, triggerScan, exchangeAuth0Token),
+# the Firestore security rules, and the dashboard to the product's OWN project,
+# in us-east5.
 #
 # dry_run: true (the default) authenticates, installs, and syntax-checks
 # everything, then STOPS without deploying. Run it that way first — a green dry
@@ -35,7 +36,7 @@ env:
 
 jobs:
   deploy:
-    name: Deploy Functions & Rules
+    name: Deploy Functions, Rules & Dashboard
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -67,9 +68,63 @@ jobs:
       - name: Syntax-check functions
         working-directory: functions
         run: |
-          node --check index.js
-          node --check trigger.js
+          for f in index.js trigger.js exchange.js; do node --check "$f"; done
           echo "✅ Functions parse clean"
+
+      # The dashboard renders from catalog.json. If it has drifted from the
+      # registries the UI would offer modules the CLI does not have, so a stale
+      # catalog blocks the deploy rather than shipping a lying menu.
+      - name: Verify dashboard catalog is current
+        run: |
+          python3 tools/build_catalog.py
+          if ! git diff --quiet -- dashboard/public/catalog.json; then
+            echo "::error::catalog.json is stale — run tools/build_catalog.py and commit it"
+            git diff -- dashboard/public/catalog.json
+            exit 1
+          fi
+          echo "✅ Catalog matches the registries"
+
+      # config.js ships placeholders in git on purpose — the Auth0 client id and
+      # Firebase web config are environment facts, not source. They are injected
+      # here, at deploy time, from repo secrets.
+      - name: Inject runtime configuration
+        env:
+          AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN || 'dev-ws5377dam2tnlv5g.us.auth0.com' }}
+          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
+          AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+        run: |
+          MISSING=""
+          [ -z "$AUTH0_CLIENT_ID" ] && MISSING="$MISSING AUTH0_CLIENT_ID"
+          [ -z "$FIREBASE_API_KEY" ] && MISSING="$MISSING FIREBASE_API_KEY"
+          if [ -n "$MISSING" ]; then
+            echo "::error::missing dashboard config secret(s):$MISSING"
+            echo "The dashboard cannot sign anyone in without them. Set them on this repo."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os, pathlib
+          cfg = pathlib.Path("dashboard/public/config.js")
+          project = os.environ.get("GCP_PROJECT", "iron-city-it-threatinspector")
+          region = os.environ.get("GCP_REGION", "us-east5")
+          values = {
+              "__AUTH0_DOMAIN__": os.environ["AUTH0_DOMAIN"],
+              "__AUTH0_CLIENT_ID__": os.environ["AUTH0_CLIENT_ID"],
+              "__AUTH0_AUDIENCE__": os.environ.get("AUTH0_AUDIENCE", ""),
+              "__FIREBASE_API_KEY__": os.environ["FIREBASE_API_KEY"],
+              "__FIREBASE_AUTH_DOMAIN__": f"{project}.firebaseapp.com",
+              "__FIREBASE_PROJECT_ID__": project,
+              "__EXCHANGE_URL__": f"https://{region}-{project}.cloudfunctions.net/exchangeAuth0Token",
+          }
+          text = cfg.read_text()
+          for placeholder, value in values.items():
+              text = text.replace(placeholder, value)
+          cfg.write_text(text)
+          left = [p for p in values if p in text]
+          if left:
+              raise SystemExit(f"placeholders not replaced: {left}")
+          print("config.js populated")
+          PY
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -106,15 +161,16 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: |
           firebase deploy \
-            --only functions,firestore:rules \
+            --only functions,firestore:rules,hosting \
             --project "$GCP_PROJECT" \
             --non-interactive \
             --force
 
-      - name: Report storeScanResults URL
+      - name: Report deployed endpoints
         if: ${{ !inputs.dry_run }}
         run: |
           URL="https://${GCP_REGION}-${GCP_PROJECT}.cloudfunctions.net/storeScanResults"
+          SITE="https://${GCP_PROJECT}.web.app"
           {
             echo "### Deployed to \`${GCP_PROJECT}\` (${GCP_REGION})"
             echo ""
@@ -126,5 +182,8 @@ jobs:
             echo ""
             echo "Until that secret is set, the scan pipeline fails closed rather than"
             echo "discarding results."
+            echo ""
+            echo "Dashboard: $SITE"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "storeScanResults: $URL"
+          echo "dashboard: $SITE"

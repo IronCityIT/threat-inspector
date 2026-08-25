@@ -1,0 +1,214 @@
+{
+  "modules": [
+    {
+      "name": "subdomain_enum",
+      "description": "Enumerates subdomains that expand the target's attack surface.",
+      "groups": [
+        "standard",
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "domain"
+      ],
+      "label": "Attack Surface Discovery"
+    },
+    {
+      "name": "qualys_compliance_ingest",
+      "description": "Imports control results from an existing compliance export.",
+      "groups": [
+        "ingest",
+        "deep"
+      ],
+      "kind": "file",
+      "extensions": [
+        ".xlsx",
+        ".xlsm",
+        ".csv"
+      ],
+      "label": "Compliance Export Import"
+    },
+    {
+      "name": "default_creds_check",
+      "description": "Flags exposed management interfaces prone to default credentials.",
+      "groups": [
+        "standard",
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "domain",
+        "hostname",
+        "url",
+        "ip"
+      ],
+      "label": "Default Credential Exposure"
+    },
+    {
+      "name": "cve_lookup",
+      "description": "Correlates exposed service versions with known vulnerabilities.",
+      "groups": [
+        "standard",
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "ip",
+        "domain",
+        "hostname"
+      ],
+      "label": "Known Vulnerability Correlation"
+    },
+    {
+      "name": "port_scan",
+      "description": "Discovers reachable network ports and listening services.",
+      "groups": [
+        "quick",
+        "standard",
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "ip",
+        "domain",
+        "hostname"
+      ],
+      "label": "Network Exposure"
+    },
+    {
+      "name": "nmap_ingest",
+      "description": "Imports host and service data from an existing network discovery export.",
+      "groups": [
+        "ingest",
+        "deep"
+      ],
+      "kind": "file",
+      "extensions": [
+        ".xml",
+        ".txt",
+        ".nmap"
+      ],
+      "label": "Network Scan Import"
+    },
+    {
+      "name": "header_security_check",
+      "description": "Checks for recommended HTTP security response headers.",
+      "groups": [
+        "quick",
+        "standard",
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "domain",
+        "hostname",
+        "url"
+      ],
+      "label": "Security Header Review"
+    },
+    {
+      "name": "service_fingerprint",
+      "description": "Identifies the software and version exposed on each open port.",
+      "groups": [
+        "standard",
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "ip",
+        "domain",
+        "hostname"
+      ],
+      "label": "Service Identification"
+    },
+    {
+      "name": "tls_cert_check",
+      "description": "Grades transport security and flags certificates nearing expiry.",
+      "groups": [
+        "quick",
+        "standard",
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "domain",
+        "hostname",
+        "url"
+      ],
+      "label": "Transport Security"
+    },
+    {
+      "name": "qualys_ingest",
+      "description": "Imports findings from an existing spreadsheet vulnerability export.",
+      "groups": [
+        "ingest",
+        "deep"
+      ],
+      "kind": "file",
+      "extensions": [
+        ".xlsx",
+        ".xlsm",
+        ".csv"
+      ],
+      "label": "Vulnerability Export Import"
+    },
+    {
+      "name": "nessus_ingest",
+      "description": "Imports findings from an existing vulnerability assessment export.",
+      "groups": [
+        "ingest",
+        "deep"
+      ],
+      "kind": "file",
+      "extensions": [
+        ".nessus",
+        ".csv"
+      ],
+      "label": "Vulnerability Scan Import"
+    },
+    {
+      "name": "zap_ingest",
+      "description": "Imports findings from an existing web application assessment export.",
+      "groups": [
+        "ingest",
+        "deep"
+      ],
+      "kind": "file",
+      "extensions": [
+        ".xml",
+        ".json"
+      ],
+      "label": "Web Application Scan Import"
+    },
+    {
+      "name": "web_vuln_scan",
+      "description": "Actively probes a web application for known vulnerabilities.",
+      "groups": [
+        "deep"
+      ],
+      "kind": "scan",
+      "target_kinds": [
+        "url"
+      ],
+      "label": "Web Application Testing"
+    }
+  ],
+  "groups": [
+    {
+      "name": "quick",
+      "label": "Quick"
+    },
+    {
+      "name": "standard",
+      "label": "Standard"
+    },
+    {
+      "name": "deep",
+      "label": "Deep"
+    },
+    {
+      "name": "ingest",
+      "label": "Import"
+    }
+  ]
+}

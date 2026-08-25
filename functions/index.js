@@ -127,3 +127,7 @@ exports.storeScanResults = onRequest(
 // point, otherwise `firebase deploy --only functions` would ship storeScanResults
 // alone and the dashboard would have nothing to call.
 exports.triggerScan = require("./trigger").triggerScan;
+
+// The Auth0 -> Firebase bridge. Without it firestore.rules can never be
+// satisfied, because nothing else mints the client_id claim they gate on.
+exports.exchangeAuth0Token = require("./exchange").exchangeAuth0Token;
