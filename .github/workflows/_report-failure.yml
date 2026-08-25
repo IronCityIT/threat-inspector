@@ -1,0 +1,156 @@
+name: Iron City Threat Inspector - Report Failure
+
+# ============================================================
+# Failure reporter shared by every scan workflow.
+#
+# Without this, a failed scan job skips the analyze/store pipeline and NOTHING is
+# ever written to Firestore — the dashboard shows a scan that is permanently
+# "running". This workflow closes that hole: it POSTs a status:"failed" record to
+# storeScanResults so the UI can render "scan failed" with a link to the run.
+#
+# It writes to the SAME clients/{client_id}/scans/{scan_id} document the success
+# path would have written, so the failure replaces the pending state in place.
+# White-label: the failure record names no underlying tool.
+# ============================================================
+
+on:
+  workflow_call:
+    inputs:
+      scan_type:
+        description: 'Internal scan category (e.g. port_scan, tls_check)'
+        required: true
+        type: string
+      target:
+        description: 'Domain, URL, or IP that was scanned'
+        required: true
+        type: string
+      client_name:
+        description: 'Client identifier'
+        required: true
+        type: string
+      scan_id:
+        description: 'Unique scan identifier (may be empty if the scan job died early)'
+        required: false
+        type: string
+        default: ''
+      run_id:
+        description: 'GitHub run id, used to rebuild the default scan_id'
+        required: true
+        type: string
+      scan_id_prefix:
+        description: 'Prefix used to build the fallback scan_id (must match the caller)'
+        required: false
+        type: string
+        default: 'ti'
+      failed_stage:
+        description: 'Which stage failed: scan | analyze-store'
+        required: false
+        type: string
+        default: 'scan'
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Report Failure
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # scan_id is rebuilt with the SAME rule the caller uses when the input is
+      # blank, so a scan that failed before emitting its id still updates the
+      # document the dashboard is already polling.
+      - name: Resolve scan identifiers
+        id: ids
+        env:
+          SCAN_ID: ${{ inputs.scan_id }}
+          RUN_ID: ${{ inputs.run_id }}
+          PREFIX: ${{ inputs.scan_id_prefix }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SCAN_ID" ]; then
+            SCAN_ID="${PREFIX}-${RUN_ID}"
+            echo "scan job died before emitting a scan_id — rebuilt as $SCAN_ID"
+          fi
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build failure payload
+        env:
+          SCAN_TYPE: ${{ inputs.scan_type }}
+          SCAN_ID: ${{ steps.ids.outputs.scan_id }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          TARGET: ${{ inputs.target }}
+          FAILED_STAGE: ${{ inputs.failed_stage }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import datetime
+          import json
+          import os
+          import re
+
+          def to_client_id(value):
+              slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower())
+              return slug.strip("-")
+
+          # Client-facing message: describes the outcome, never the tool that broke.
+          stage = os.environ.get("FAILED_STAGE", "scan")
+          message = ("Scan did not complete. The security assessment could not be "
+                     "finished and no results were produced.")
+          if stage == "analyze-store":
+              message = ("Scan completed but results could not be analyzed or stored. "
+                         "No findings are available for this run.")
+
+          payload = {
+              "scan_type": os.environ["SCAN_TYPE"],
+              "scan_id": os.environ["SCAN_ID"],
+              "client_id": to_client_id(os.environ["CLIENT_NAME"]),
+              "client_name": os.environ["CLIENT_NAME"],
+              "target": os.environ["TARGET"],
+              "status": "failed",
+              "error": {
+                  "stage": stage,
+                  "message": message,
+                  # Internal-only: an operator link, not rendered to the client.
+                  "run_url": os.environ["RUN_URL"],
+              },
+              "summary": {"total": 0},
+              "findings": [],
+              "timestamp": datetime.datetime.now(datetime.timezone.utc)
+                                   .strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          with open("payload.json", "w") as fh:
+              json.dump(payload, fh)
+          print(f"Failure payload built for scan_id={payload['scan_id']} "
+                f"client_id={payload['client_id']} stage={stage}")
+          PYEOF
+
+      - name: Validate payload JSON
+        run: |
+          set -euo pipefail
+          [ "$(head -c 1 payload.json)" = "{" ] || { echo "::error::payload.json does not start with {"; exit 1; }
+          python3 -m json.tool payload.json > /dev/null
+          echo "payload.json is valid JSON"
+
+      # A failure report that itself fails silently would recreate the exact hole
+      # this workflow exists to close, so a configured endpoint that rejects the
+      # POST is a hard error.
+      - name: POST failure record to storeScanResults
+        env:
+          STORE_URL: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STORE_URL:-}" ]; then
+            echo "::warning::STORE_SCAN_RESULTS_URL not set — cannot report failure to the dashboard"
+            exit 0
+          fi
+          HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
+            -H "Content-Type: application/json" \
+            --data @payload.json)
+          echo "storeScanResults responded HTTP $HTTP_CODE"
+          cat response.txt || true
+          case "$HTTP_CODE" in
+            2*) echo "Failure record stored — dashboard will show 'scan failed'" ;;
+            *)  echo "::error::failed to store the failure record (HTTP $HTTP_CODE)"; exit 1 ;;
+          esac

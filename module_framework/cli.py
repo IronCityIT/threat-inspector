@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     ctx = {"client": args.client, "scan_id": args.scan_id}
-    findings = []
+    findings: list[dict] = []
     for t in targets:
         for m in mods:
             if m.applies_to(t.kind):

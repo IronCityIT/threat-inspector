@@ -21,23 +21,32 @@ on:
       files_path:
         description: 'Path or directory (in the checkout) holding uploaded scan export(s)'
         required: true
+        type: string
       client_name:
         description: 'Client identifier'
         required: true
+        type: string
       scan_id:
         description: 'Unique scan identifier'
         required: false
+        type: string
       modules:
         description: 'Comma list of file modules to run (overrides group)'
         required: false
+        type: string
       group:
-        description: 'Named group: ingest | deep'
+        description: 'Named group preset (ignored when modules is set)'
         required: false
+        type: choice
         default: 'ingest'
+        options:
+          - ingest
+          - deep
       defectdojo_export:
-        description: 'Also export findings to DefectDojo (optional; requires DEFECTDOJO_* secrets)'
+        description: 'Also export findings to an external tracker (optional; requires the export secrets)'
         required: false
-        default: 'false'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -59,13 +68,26 @@ jobs:
 
       - name: Resolve scan identifiers
         id: ids
+        env:
+          FILES_PATH: ${{ inputs.files_path }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID_IN: ${{ inputs.scan_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          if [ -z "${{ inputs.files_path }}" ]; then echo "❌ files_path is required"; exit 1; fi
-          if [ -z "${{ inputs.client_name }}" ]; then echo "❌ client_name is required"; exit 1; fi
-          SCAN_ID="${{ inputs.scan_id }}"
-          [ -z "$SCAN_ID" ] && SCAN_ID="ti-file-${{ github.run_id }}"
+          set -euo pipefail
+          if [ -z "${FILES_PATH:-}" ]; then echo "::error::files_path is required"; exit 1; fi
+          if [ -z "${CLIENT_NAME:-}" ]; then echo "::error::client_name is required"; exit 1; fi
+          # files_path indexes into the checkout only — reject traversal and absolute paths.
+          case "$FILES_PATH" in
+            /*|*..*) echo "::error::files_path must be a relative path inside the checkout"; exit 1 ;;
+          esac
+          if [ ! -e "$FILES_PATH" ]; then
+            echo "::error::files_path '$FILES_PATH' does not exist in the checkout"; exit 1
+          fi
+          SCAN_ID="${SCAN_ID_IN:-}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="ti-file-${RUN_ID}"
           echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
-          echo "✅ Inputs validated (client: ${{ inputs.client_name }}, scan_id: $SCAN_ID)"
+          echo "Inputs validated (client: $CLIENT_NAME, scan_id: $SCAN_ID)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -87,21 +109,36 @@ jobs:
           mkdir -p results
           # --modules wins over --group; mirrors registry.select() precedence.
           if [ -n "$MODULES" ]; then
-            SEL="--modules $MODULES"
+            SEL=(--modules "$MODULES")
           else
-            SEL="--group ${GROUP:-ingest}"
+            SEL=(--group "${GROUP:-ingest}")
           fi
           # files_path may be a single file or a directory of exports.
           if [ -d "$FILES_PATH" ]; then
-            SRC="--files-dir $FILES_PATH"
+            SRC=(--files-dir "$FILES_PATH")
           else
-            SRC="--files $FILES_PATH"
+            SRC=(--files "$FILES_PATH")
           fi
-          echo "📥 Ingesting ($SEL) from $FILES_PATH"
-          python3 module_framework/ingest.py $SEL $SRC \
+          echo "Ingesting (${SEL[*]}) from $FILES_PATH"
+          # stderr is kept as a job artifact so a failed ingest is diagnosable
+          # without re-running it.
+          set +e
+          python3 module_framework/ingest.py "${SEL[@]}" "${SRC[@]}" \
             --client "$CLIENT_NAME" \
-            --scan-id "$SCAN_ID" > results/findings.json
-          python3 -c "import json;d=json.load(open('results/findings.json'));print('✅ modules:',d['modules_run'],'files:',d['file_count'],'skipped:',len(d['files_skipped']),'findings:',len(d['findings']))"
+            --scan-id "$SCAN_ID" > results/findings.json 2> results/ingest-stderr.log
+          RC=$?
+          set -e
+          if [ $RC -ne 0 ]; then
+            echo "::error::ingest exited with code $RC"
+            echo "--- captured stderr ---"
+            cat results/ingest-stderr.log || true
+            exit $RC
+          fi
+          # Validation gate: the findings file is the pipeline's only contract.
+          [ "$(head -c 1 results/findings.json)" = "{" ] || {
+            echo "::error::findings.json does not start with {"; cat results/ingest-stderr.log || true; exit 1; }
+          python3 -m json.tool results/findings.json > /dev/null
+          python3 -c "import json;d=json.load(open('results/findings.json'));print('modules:',d['modules_run'],'files:',d['file_count'],'skipped:',len(d['files_skipped']),'findings:',len(d['findings']))"
 
       - name: Upload findings
         uses: actions/upload-artifact@v4
@@ -109,6 +146,15 @@ jobs:
           name: ti-file-findings-${{ steps.ids.outputs.scan_id }}
           path: results/
           retention-days: 90
+
+      - name: Upload ingest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ti-file-diagnostics-${{ github.run_id }}
+          path: results/ingest-stderr.log
+          retention-days: 30
+          if-no-files-found: ignore
 
   pipeline:
     name: Analyze & Store
@@ -128,7 +174,7 @@ jobs:
   defectdojo:
     name: Export to DefectDojo (optional)
     needs: ingest
-    if: inputs.defectdojo_export == 'true'
+    if: ${{ inputs.defectdojo_export }}
     runs-on: ubuntu-latest
     steps:
       - name: Download findings
@@ -165,16 +211,39 @@ jobs:
           CLIENT_NAME: ${{ inputs.client_name }}
           SCAN_ID: ${{ needs.ingest.outputs.scan_id }}
         run: |
-          if [ -z "$DEFECTDOJO_URL" ] || [ -z "$DEFECTDOJO_API_KEY" ] || [ -z "$DEFECTDOJO_ENGAGEMENT_ID" ]; then
-            echo "::warning::DefectDojo secrets not configured — skipping optional export"
+          set -euo pipefail
+          if [ -z "${DEFECTDOJO_URL:-}" ] || [ -z "${DEFECTDOJO_API_KEY:-}" ] || [ -z "${DEFECTDOJO_ENGAGEMENT_ID:-}" ]; then
+            echo "::warning::export secrets not configured — skipping optional export"
             exit 0
           fi
-          curl -sS -X POST "${DEFECTDOJO_URL%/}/api/v2/import-scan/" \
+          # Not configured -> skip (it is optional). Configured but rejected ->
+          # a real failure; silently warning would hide a broken export forever.
+          HTTP_CODE=$(curl -sS -o dd-response.txt -w '%{http_code}' -X POST "${DEFECTDOJO_URL%/}/api/v2/import-scan/" \
             -H "Authorization: Token ${DEFECTDOJO_API_KEY}" \
             -F "scan_type=Generic Findings Import" \
             -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
             -F "scan_date=$(date -u +%Y-%m-%d)" \
             -F "tags=iron-city,${SCAN_ID}" \
-            -F "file=@dd-generic.json;type=application/json" \
-            && echo "✅ Exported to DefectDojo" \
-            || echo "::warning::DefectDojo export POST failed"
+            -F "file=@dd-generic.json;type=application/json")
+          echo "export endpoint responded HTTP $HTTP_CODE"
+          case "$HTTP_CODE" in
+            2*) echo "Export completed" ;;
+            *)  echo "::error::export POST rejected (HTTP $HTTP_CODE)"; cat dd-response.txt || true; exit 1 ;;
+          esac
+
+  # Without this the dashboard would show an ingest stuck at "running" forever:
+  # when `ingest` fails, `pipeline` is skipped and nothing is ever written.
+  report-failure:
+    name: Report Failure
+    needs: [ingest, pipeline]
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    uses: ./.github/workflows/_report-failure.yml
+    with:
+      scan_type: file_ingest
+      target: ${{ inputs.files_path }}
+      client_name: ${{ inputs.client_name }}
+      scan_id: ${{ needs.ingest.outputs.scan_id }}
+      run_id: ${{ github.run_id }}
+      scan_id_prefix: ti-file
+      failed_stage: ${{ needs.ingest.result == 'failure' && 'scan' || 'analyze-store' }}
+    secrets: inherit
