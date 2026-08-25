@@ -3,6 +3,7 @@ nmap_ingest.py — ingest network scan exports (XML/TXT/greppable).
 
 Re-houses NmapParser. White-labeled: branded as network scan ingestion.
 """
+
 from __future__ import annotations
 
 from base import FileModule

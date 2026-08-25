@@ -12,12 +12,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class DatabaseSettings(BaseSettings):
     """Database configuration."""
+
     url: str = Field(default="sqlite:///data/threat_inspector.db", alias="DATABASE_URL")
     echo: bool = False
 
 
 class APISettings(BaseSettings):
     """API server configuration."""
+
     secret_key: str = Field(default="change-me-in-production", alias="API_SECRET_KEY")
     host: str = Field(default="0.0.0.0", alias="API_HOST")
     port: int = Field(default=8000, alias="API_PORT")
@@ -34,6 +36,7 @@ class APISettings(BaseSettings):
 
 class RemediationSettings(BaseSettings):
     """AI remediation engine configuration."""
+
     engine: str = Field(default="local", alias="REMEDIATION_ENGINE")
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
     ollama_model: str = Field(default="llama3", alias="OLLAMA_MODEL")
@@ -45,6 +48,7 @@ class RemediationSettings(BaseSettings):
 
 class ReportSettings(BaseSettings):
     """Report generation configuration."""
+
     output_dir: Path = Field(default=Path("./reports"), alias="REPORT_OUTPUT_DIR")
     company_name: str = Field(default="Iron City IT Advisors", alias="REPORT_COMPANY_NAME")
     logo_path: Path | None = Field(default=None, alias="REPORT_LOGO_PATH")
@@ -54,11 +58,7 @@ class ReportSettings(BaseSettings):
 class Settings(BaseSettings):
     """Main application settings."""
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Sub-settings
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)

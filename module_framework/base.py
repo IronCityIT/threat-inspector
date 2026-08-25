@@ -13,6 +13,7 @@ the groups it belongs to. Port existing Claude-generated logic into these — on
 module per capability, no monoliths. Never bend run(target, ctx) to swallow a
 file: file ingestion is its own contract (ingest) so neither side is compromised.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -31,7 +32,7 @@ SEVERITIES = ("info", "low", "medium", "high", "critical")
 class Finding:
     module: str
     target: str
-    severity: str            # one of SEVERITIES
+    severity: str  # one of SEVERITIES
     title: str
     detail: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -46,10 +47,10 @@ class Finding:
 
 class ScanModule(ABC):
     # Set these on each subclass.
-    name: str = ""                 # short id, e.g. "port_scan"
-    description: str = ""          # human-readable, client-safe (white-labeled)
+    name: str = ""  # short id, e.g. "port_scan"
+    description: str = ""  # human-readable, client-safe (white-labeled)
     target_kinds: tuple[str, ...] = ("ip", "url", "domain", "hostname")
-    groups: tuple[str, ...] = ("standard",)   # e.g. ("quick","standard","deep")
+    groups: tuple[str, ...] = ("standard",)  # e.g. ("quick","standard","deep")
 
     def applies_to(self, kind: str) -> bool:
         return kind in self.target_kinds
@@ -70,10 +71,10 @@ class FileModule(ABC):
     """
 
     # Set these on each subclass.
-    name: str = ""                 # short id, e.g. "qualys_ingest"
-    description: str = ""          # human-readable, client-safe (white-labeled)
-    extensions: tuple[str, ...] = ()          # lowercased, with dot: (".xml", ".csv")
-    groups: tuple[str, ...] = ("ingest",)     # e.g. ("ingest","deep")
+    name: str = ""  # short id, e.g. "qualys_ingest"
+    description: str = ""  # human-readable, client-safe (white-labeled)
+    extensions: tuple[str, ...] = ()  # lowercased, with dot: (".xml", ".csv")
+    groups: tuple[str, ...] = ("ingest",)  # e.g. ("ingest","deep")
 
     def accepts(self, path: Path) -> bool:
         """True if this module can, by extension, handle the file. When several

@@ -5,6 +5,7 @@ A deep-only, intrusive check. Uses a community template scanner internally;
 branded as a web application vulnerability assessment. Runs only against URL
 targets so it never fires blindly at raw IPs.
 """
+
 from __future__ import annotations
 
 import json

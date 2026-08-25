@@ -27,6 +27,7 @@ class Base(DeclarativeBase):
 
 class SeverityLevel(enum.Enum):
     """Vulnerability severity levels."""
+
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -36,6 +37,7 @@ class SeverityLevel(enum.Enum):
 
 class ScannerType(enum.Enum):
     """Supported vulnerability scanners."""
+
     QUALYS = "qualys"
     ZAP = "zap"
     NMAP = "nmap"
@@ -48,6 +50,7 @@ class ScannerType(enum.Enum):
 
 class Client(Base):
     """Client/organization model."""
+
     __tablename__ = "clients"
 
     id = Column(Integer, primary_key=True)
@@ -70,6 +73,7 @@ class Client(Base):
 
 class Domain(Base):
     """Domain/asset configuration for a client."""
+
     __tablename__ = "domains"
 
     id = Column(Integer, primary_key=True)
@@ -90,6 +94,7 @@ class Domain(Base):
 
 class Project(Base):
     """Assessment project for a client."""
+
     __tablename__ = "projects"
 
     id = Column(Integer, primary_key=True)
@@ -112,6 +117,7 @@ class Project(Base):
 
 class Scan(Base):
     """Uploaded scan file and metadata."""
+
     __tablename__ = "scans"
 
     id = Column(Integer, primary_key=True)
@@ -130,7 +136,9 @@ class Scan(Base):
 
     # Relationships
     project = relationship("Project", back_populates="scans")
-    vulnerabilities = relationship("Vulnerability", back_populates="scan", cascade="all, delete-orphan")
+    vulnerabilities = relationship(
+        "Vulnerability", back_populates="scan", cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<Scan(id={self.id}, scanner='{self.scanner_type}')>"
@@ -138,6 +146,7 @@ class Scan(Base):
 
 class Vulnerability(Base):
     """Individual vulnerability finding."""
+
     __tablename__ = "vulnerabilities"
 
     id = Column(Integer, primary_key=True)
@@ -205,6 +214,7 @@ class Vulnerability(Base):
 
 class Report(Base):
     """Generated report metadata."""
+
     __tablename__ = "reports"
 
     id = Column(Integer, primary_key=True)

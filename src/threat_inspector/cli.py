@@ -29,54 +29,35 @@ def main():
 
 @main.command()
 @click.option(
-    "--input", "-i",
+    "--input",
+    "-i",
     required=True,
     type=click.Path(exists=True),
-    help="Input file or directory containing scan files"
+    help="Input file or directory containing scan files",
 )
 @click.option(
-    "--output", "-o",
+    "--output",
+    "-o",
     default="./reports",
     type=click.Path(),
-    help="Output directory for reports (default: ./reports)"
+    help="Output directory for reports (default: ./reports)",
 )
 @click.option(
-    "--format", "-f",
+    "--format",
+    "-f",
     multiple=True,
     default=["html"],
     type=click.Choice(["html", "json", "csv", "pdf"]),
-    help="Output format(s) (default: html)"
+    help="Output format(s) (default: html)",
 )
+@click.option("--client", "-c", default=None, help="Client name for the report")
+@click.option("--project", "-p", default=None, help="Project name for the report")
+@click.option("--config", type=click.Path(exists=True), help="Path to YAML configuration file")
 @click.option(
-    "--client", "-c",
-    default=None,
-    help="Client name for the report"
+    "--recursive", "-r", is_flag=True, help="Recursively search directories for scan files"
 )
-@click.option(
-    "--project", "-p",
-    default=None,
-    help="Project name for the report"
-)
-@click.option(
-    "--config",
-    type=click.Path(exists=True),
-    help="Path to YAML configuration file"
-)
-@click.option(
-    "--recursive", "-r",
-    is_flag=True,
-    help="Recursively search directories for scan files"
-)
-@click.option(
-    "--no-remediation",
-    is_flag=True,
-    help="Skip remediation guidance generation"
-)
-@click.option(
-    "--no-compliance",
-    is_flag=True,
-    help="Skip compliance framework mapping"
-)
+@click.option("--no-remediation", is_flag=True, help="Skip remediation guidance generation")
+@click.option("--no-compliance", is_flag=True, help="Skip compliance framework mapping")
 def analyze(
     input: str,
     output: str,
@@ -119,14 +100,18 @@ def analyze(
         if input_path.is_file():
             try:
                 result = inspector.load_file(input_path)
-                progress.update(task, description=f"Loaded {input_path.name}: {result.total_count} findings")
+                progress.update(
+                    task, description=f"Loaded {input_path.name}: {result.total_count} findings"
+                )
             except Exception as e:
                 console.print(f"[red]Error loading {input_path}: {e}[/red]")
                 sys.exit(1)
         else:
             results = inspector.load_scans(input_path, recursive=recursive)
             total_vulns = sum(r.total_count for r in results)
-            progress.update(task, description=f"Loaded {len(results)} files: {total_vulns} findings")
+            progress.update(
+                task, description=f"Loaded {len(results)} files: {total_vulns} findings"
+            )
 
     # Analyze
     with Progress(
@@ -198,10 +183,7 @@ def formats():
 
 @main.command()
 @click.option(
-    "--output", "-o",
-    default=".",
-    type=click.Path(),
-    help="Output directory for config files"
+    "--output", "-o", default=".", type=click.Path(), help="Output directory for config files"
 )
 def init(output: str):
     """Initialize a new project with sample configuration."""
@@ -328,20 +310,20 @@ def _display_summary(summary: dict):
     table.add_row("", "")
 
     # Severity breakdown with colors
-    if summary['critical_count'] > 0:
+    if summary["critical_count"] > 0:
         table.add_row("Critical", f"[red bold]{summary['critical_count']}[/red bold]")
-    if summary['high_count'] > 0:
+    if summary["high_count"] > 0:
         table.add_row("High", f"[orange1]{summary['high_count']}[/orange1]")
-    if summary['medium_count'] > 0:
+    if summary["medium_count"] > 0:
         table.add_row("Medium", f"[yellow]{summary['medium_count']}[/yellow]")
-    if summary['low_count'] > 0:
+    if summary["low_count"] > 0:
         table.add_row("Low", f"[blue]{summary['low_count']}[/blue]")
-    if summary['info_count'] > 0:
+    if summary["info_count"] > 0:
         table.add_row("Informational", f"[dim]{summary['info_count']}[/dim]")
 
     table.add_row("", "")
-    table.add_row("Assets Affected", str(summary.get('assets_affected', 'N/A')))
-    table.add_row("Scan Files", str(summary.get('scan_files_processed', 'N/A')))
+    table.add_row("Assets Affected", str(summary.get("assets_affected", "N/A")))
+    table.add_row("Scan Files", str(summary.get("scan_files_processed", "N/A")))
 
     console.print(table)
     console.print()

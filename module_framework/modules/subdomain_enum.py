@@ -4,6 +4,7 @@ subdomain_enum.py — passive subdomain discovery for a domain.
 Re-housed from the asset-discovery workflow. Uses subfinder internally; branded
 as attack-surface / asset discovery.
 """
+
 from __future__ import annotations
 
 from typing import Any

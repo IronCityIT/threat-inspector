@@ -76,9 +76,7 @@ class NessusParser(BaseParser):
                 # Parse report items (vulnerabilities)
                 for item in report_host.findall(".//ReportItem"):
                     try:
-                        vuln = self._parse_report_item(
-                            item, host_name, host_ip, host_fqdn, os_info
-                        )
+                        vuln = self._parse_report_item(item, host_name, host_ip, host_fqdn, os_info)
                         if vuln:
                             vulnerabilities.append(vuln)
                     except Exception as e:
@@ -99,8 +97,7 @@ class NessusParser(BaseParser):
         )
 
     def _parse_report_item(
-        self, item: ET.Element, host_name: str, host_ip: str,
-        host_fqdn: str, os_info: str
+        self, item: ET.Element, host_name: str, host_ip: str, host_fqdn: str, os_info: str
     ) -> ParsedVulnerability | None:
         """Parse a single ReportItem from Nessus XML."""
 
@@ -189,28 +186,20 @@ class NessusParser(BaseParser):
     def _parse_csv_row(self, row: dict) -> ParsedVulnerability | None:
         """Parse a single row from Nessus CSV."""
         # Handle various column name formats
-        title = (
-            row.get("Name") or
-            row.get("Plugin Name") or
-            row.get("name") or
-            ""
-        ).strip()
+        title = (row.get("Name") or row.get("Plugin Name") or row.get("name") or "").strip()
 
         if not title:
             return None
 
         # Get severity
-        severity_raw = (
-            row.get("Risk") or
-            row.get("Severity") or
-            row.get("risk") or
-            "Info"
-        )
+        severity_raw = row.get("Risk") or row.get("Severity") or row.get("risk") or "Info"
         severity = self.normalize_severity(severity_raw)
 
         # Get CVSS
         cvss_score = None
-        cvss_raw = row.get("CVSS v3.0 Base Score") or row.get("CVSS") or row.get("CVSS v2.0 Base Score")
+        cvss_raw = (
+            row.get("CVSS v3.0 Base Score") or row.get("CVSS") or row.get("CVSS v2.0 Base Score")
+        )
         if cvss_raw:
             try:
                 cvss_score = float(cvss_raw)
