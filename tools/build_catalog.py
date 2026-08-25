@@ -69,8 +69,14 @@ def _run(script: str) -> dict:
         [sys.executable, str(ROOT / "module_framework" / script), "--list-modules"],
         capture_output=True,
         text=True,
-        check=True,
     )
+    if proc.returncode != 0:
+        # Surface the real reason. A bare CalledProcessError hides the import
+        # error that actually broke it, which is almost always a missing
+        # dependency on a clean checkout.
+        raise SystemExit(
+            f"{script} --list-modules failed (exit {proc.returncode}):\n{proc.stderr.strip()}"
+        )
     return json.loads(proc.stdout)
 
 

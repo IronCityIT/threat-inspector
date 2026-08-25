@@ -38,6 +38,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      # The registries import their modules to enumerate them, so the runtime
+      # dependencies have to be present for --list-modules to work at all.
+      - run: pip install -r requirements.txt
       # A stale catalog means the dashboard offers modules the CLI does not have.
       - name: Rebuild and compare
         run: |

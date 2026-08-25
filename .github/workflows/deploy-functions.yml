@@ -76,6 +76,7 @@ jobs:
       # catalog blocks the deploy rather than shipping a lying menu.
       - name: Verify dashboard catalog is current
         run: |
+          pip install -r requirements.txt
           python3 tools/build_catalog.py
           if ! git diff --quiet -- dashboard/public/catalog.json; then
             echo "::error::catalog.json is stale — run tools/build_catalog.py and commit it"
