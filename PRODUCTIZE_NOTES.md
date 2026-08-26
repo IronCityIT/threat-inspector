@@ -932,3 +932,44 @@ fast listing whichever is missing:
 
 Auth0 also needs an **Action** setting `https://ironcityit.com/client_id` on the token, or
 Organizations configured so `org_name` resolves the tenant. `exchange.js` accepts either.
+
+---
+
+# CI on main — blocked by a GitHub Actions platform outage
+
+**Date:** 2026-08-26 · Branch `chore/threat-inspector-ci-dispatch` (PR #9)
+
+PR #8 squash-merged cleanly to `main` (`822acf4`) and `ci.yml` is present there, but
+**GitHub created no Actions check-suite for the merge commit** — `actions/runs?head_sha=822acf4`
+returns `total_count: 0`, and the only suite on that SHA is Render's. PR #9, opened afterwards,
+likewise got zero checks.
+
+**Root cause: GitHub Actions is in a platform-wide `major_outage`**, confirmed against
+`githubstatus.com/api/v2/components.json` → `Actions -> major_outage` (Webhooks operational).
+Corroborated by the account: the newest run anywhere in `IronCityIT` is
+`ironcity-threat-intel` at 2026-08-26T12:22:03Z. Nothing has been scheduled since.
+
+Ruled out: Actions is `enabled` with `allowed_actions: all`; the repo is **public** so metered
+minutes do not apply; `ci.yml` parses and is present at `main`.
+
+## What this blocks
+
+Everything in the merge policy that depends on green CI. **PR #9 is deliberately left unmerged**
+— its gates cannot go green while the platform is down, and merging on local evidence alone
+would be exactly the "merged without a gate" hole this PR exists to close.
+
+Gates were run locally on the PR #9 branch and all pass (format, lint, mypy, 41 tests, catalog
+zero-diff, 10× YAML, 3× `node --check`, `pip-audit` clean). That is evidence, not a substitute
+for CI.
+
+## Resume criteria
+
+1. `githubstatus.com` reports Actions operational.
+2. Dispatch CI on `main` (the trigger PR #9 adds) and confirm all five jobs green.
+3. Confirm PR #9's own checks green, then squash-merge it.
+
+## Unrelated gap noticed, not fixed here
+
+`functions/` has no committed `package-lock.json`, so `npm ci || npm install` always degrades to
+`npm install` and `npm audit` cannot resolve a tree. Reproducibility/supply-chain gap; wants its
+own PR.
