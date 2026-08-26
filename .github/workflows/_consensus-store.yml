@@ -167,14 +167,35 @@ jobs:
       - name: POST to storeScanResults
         env:
           STORE_URL: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+          LEGACY_URL: ${{ secrets.FIREBASE_FUNCTION_URL }}
         run: |
           set -euo pipefail
-          if [ -z "${STORE_URL:-}" ]; then
+          URL="${STORE_URL:-}"
+
+          # FIREBASE_FUNCTION_URL predates the storeScanResults architecture and is still
+          # the only endpoint secret set on this repo. Accept it as a fallback, but ONLY
+          # when it really is a storeScanResults Cloud Function: scan findings are
+          # PHI-adjacent and must reach Firestore, never the QNAP ingest API. If the
+          # legacy secret points anywhere else this fails rather than quietly
+          # exfiltrating findings to the wrong destination.
+          if [ -z "$URL" ] && [ -n "${LEGACY_URL:-}" ]; then
+            case "$LEGACY_URL" in
+              https://*.cloudfunctions.net/storeScanResults|https://*.run.app/storeScanResults)
+                echo "::notice::STORE_SCAN_RESULTS_URL unset; using FIREBASE_FUNCTION_URL (verified storeScanResults endpoint)"
+                URL="$LEGACY_URL" ;;
+              *)
+                echo "::error::FIREBASE_FUNCTION_URL is set but is not a storeScanResults Cloud Function endpoint."
+                echo "Refusing to post scan findings to it. Set STORE_SCAN_RESULTS_URL to the deployed function URL."
+                exit 1 ;;
+            esac
+          fi
+
+          if [ -z "$URL" ]; then
             echo "::error::STORE_SCAN_RESULTS_URL is not set — results cannot be stored."
             echo "Deploy the function (deploy-functions.yml) and set the secret to its URL."
             exit 1
           fi
-          HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
+          HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$URL" \
             -H "Content-Type: application/json" \
             --data @payload.json)
           echo "storeScanResults responded HTTP $HTTP_CODE"
