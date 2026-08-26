@@ -7,6 +7,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Without this there is no way to re-run the gates on main short of pushing a
+  # commit, which makes a merge that fails to trigger CI invisible until the
+  # next change lands.
+  workflow_dispatch:
 
 permissions:
   contents: read
