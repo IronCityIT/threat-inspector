@@ -8,7 +8,7 @@ A tool counts as "accessible from the UI" only when all three of these hold:
 |---|---|---|
 | (a) | `workflow_dispatch` with correct typed inputs | **Done** — all 6 workflows, in this repo |
 | (b) | A trigger Cloud Function (`triggerScan`) | **Scaffolded** — `functions/trigger.js`, deployed by `deploy-functions.yml`, needs `GITHUB_DISPATCH_TOKEN` |
-| (c) | A dashboard button/route wired to that function | **Blocked** — this repo has no dashboard |
+| (c) | A dashboard button/route wired to that function | **Done** — `dashboard/public/`, renders from `catalog.json` |
 
 ## (a) Dispatchable workflows
 

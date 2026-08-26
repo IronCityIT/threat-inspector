@@ -1,0 +1,92 @@
+name: CI
+
+# Quality gates, enforced. These were being run by hand, which meant a red gate
+# only blocked a merge if someone remembered to look.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Lint, types, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Format
+        run: python -m ruff format --check .
+      - name: Lint
+        run: python -m ruff check .
+      - name: Typecheck
+        run: python -m mypy module_framework src
+      - name: Tests
+        run: python -m pytest -q
+
+  catalog:
+    name: Dashboard catalog is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # The registries import their modules to enumerate them, so the runtime
+      # dependencies have to be present for --list-modules to work at all.
+      - run: pip install -r requirements.txt
+      # A stale catalog means the dashboard offers modules the CLI does not have.
+      - name: Rebuild and compare
+        run: |
+          python3 tools/build_catalog.py
+          git diff --exit-code -- dashboard/public/catalog.json \
+            || { echo "::error::catalog.json is stale — run tools/build_catalog.py"; exit 1; }
+
+  ui:
+    name: Dashboard browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci || npm install
+      - run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run test:ui
+
+  workflows:
+    name: Workflow YAML parses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pyyaml
+      - name: Parse every workflow
+        run: |
+          for f in .github/workflows/*.yml; do
+            python3 -c "import yaml,sys;yaml.safe_load(open(sys.argv[1]))" "$f" \
+              || { echo "::error::$f does not parse"; exit 1; }
+            echo "ok $f"
+          done
+
+  functions:
+    name: Cloud Functions parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - working-directory: functions
+        run: |
+          npm ci || npm install
+          for f in index.js trigger.js exchange.js; do node --check "$f"; done

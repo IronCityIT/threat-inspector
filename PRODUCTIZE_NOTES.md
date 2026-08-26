@@ -813,3 +813,122 @@ That wiring is a follow-up PR, blocked on engine PR #2 merging.
 
 **Do not run a live scan with real client data until engine PR #2 is merged and TI is wired
 to it.** Dry runs are safe now.
+
+---
+
+# Dashboard — the last missing surface
+
+**Date:** 2026-08-25 · Branch `productize/threat-inspector-dashboard`
+
+This closes the gap that halted E2E adoption in PR #4 ("Threat Inspector has no dashboard")
+and the long-standing "dashboard still not wired to `registry.catalog()`" deferral.
+
+## The tenancy gap nobody had closed
+
+`firestore.rules` gates every read on `request.auth.token.client_id`. **Nothing was minting
+that claim.** The rules were therefore unsatisfiable — a signed-in user could never read their
+own data, and the product could not have worked even with functions deployed.
+
+`functions/exchange.js` closes it:
+
+```
+Auth0 access token -> verified against the tenant JWKS (jose)
+                   -> client_id resolved from the Auth0 Organization
+                   -> Firebase custom token carrying that claim
+```
+
+`client_id` is read **only** from the verified token — never from the request body or query
+string, so a caller cannot ask for another tenant's data. An authenticated user with no
+organisation gets a distinct `403 no_client_assigned`, which the dashboard renders as
+"contact your administrator" rather than a crash.
+
+## Single source of truth: CLI = UI
+
+`tools/build_catalog.py` generates `dashboard/public/catalog.json` from the live registries
+(`cli.py --list-modules` + `ingest.py --list-modules`). The dashboard renders checkboxes and
+group presets from that file, and `selectionToArgs()` maps the selection back onto
+`--modules` / `--group` with the same precedence as `registry.select()`. Pick a preset → you
+get `--group`; tick one extra box → the selection is bespoke and you get an explicit
+`--modules` list.
+
+Two gates keep this honest: `tests/test_catalog.py` fails if the committed catalog drifts from
+the registries, and the deploy workflow refuses to ship a stale one.
+
+## White-label — a real leak, caught by the gate
+
+Module names and descriptions **did** name the underlying tools: `nessus_ingest`, `zap_ingest`,
+and descriptions like *"Ingests vulnerability scan exports (.nessus/CSV)"*. Rendering the
+registry directly would have put those in front of clients.
+
+`build_catalog.py` now carries a `LABELS` table (every module needs a client-facing label, or
+the build **fails** — a new module cannot silently leak its name) plus `DESCRIPTIONS` overrides
+where the registry text named a tool. Enforced at two levels: a unit test over the catalog, and
+a Playwright assertion that no tool name appears in the rendered DOM.
+
+`extensions` (e.g. `.nessus`) is kept in the catalog for internal file handling and is
+deliberately **never rendered**. **Judgment call for Bill:** if clients should be able to upload
+exports directly, the file picker's `accept` list would expose those extensions. Left out of
+this PR rather than decided unilaterally.
+
+## Browser tests — 12, all passing
+
+`tests/ui/dashboard.spec.mjs` drives the real page in real Chromium against a local static
+server. `npm run test:ui`:
+
+```
+ok  placeholder config shows the not-configured state, not a crash
+ok  every catalog module renders as a check
+ok  no underlying tool name reaches the DOM
+ok  standard preset is selected on load
+ok  preset selection maps 1:1 onto --group
+ok  ticking an extra check switches to an explicit --modules list
+ok  every module the UI can send is a real registry module
+ok  start is disabled with nothing selected
+ok  scan history renders status, counts and an empty state
+ok  an unknown status cannot inject a class or break the badge
+ok  layout holds at mobile width
+ok  every form control is labelled
+
+12 passed, 0 failed
+```
+
+**What these do NOT prove — stated plainly:** real Auth0 sign-in, and real tenant isolation
+against live Firestore. Both need a provisioned Auth0 SPA app and two seeded tenants, neither
+of which exists. The tests open the signed-in view directly. The harness for the real thing is
+`icit-e2e-harness`, and it can be adopted the moment a dashboard URL exists (steps already
+recorded above) — it needs the 8 `TENANT_A_*` / `TENANT_B_*` secrets.
+
+## CI
+
+`.github/workflows/ci.yml` runs format, lint, typecheck, pytest, catalog freshness, workflow
+YAML parsing, function syntax, and the browser suite on every PR. Gates were previously
+manual, so a red gate only blocked a merge if someone remembered to look.
+
+## Quality gates
+
+| Gate | Result |
+|---|---|
+| `ruff format --check .` | ✅ 45 files formatted |
+| `ruff check .` | ✅ passed |
+| `mypy module_framework src` | ✅ no issues |
+| `pytest -q` | ✅ **41 passed** (36 + 5 new catalog tests) |
+| `npm run test:ui` | ✅ **12 passed** in Chromium |
+| YAML × 10 | ✅ all parse |
+| `node --check` × 3 | ✅ |
+| JSON gates | ✅ catalog.json, firebase.json, package manifests |
+
+## BLOCKERS — new secrets required before the dashboard can sign anyone in
+
+Not in the approved ICIT secret list, so named but never valued. The deploy workflow fails
+fast listing whichever is missing:
+
+| Secret | Why |
+|---|---|
+| `AUTH0_CLIENT_ID` | The Auth0 **SPA application** for Threat Inspector. Does not exist — must be created in the `dev-ws5377dam2tnlv5g` tenant, with `https://iron-city-it-threatinspector.web.app` as an allowed callback, logout and web origin. |
+| `FIREBASE_API_KEY` | Firebase **web app** config for the TI project. A web app must be registered in that project. |
+| `AUTH0_AUDIENCE` | Optional; only if the access token needs an API audience. |
+| `FIREBASE_SERVICE_ACCOUNT` | Still outstanding — nothing deploys without it. |
+| `GITHUB_DISPATCH_TOKEN` | Still outstanding — `triggerScan` cannot dispatch without it. |
+
+Auth0 also needs an **Action** setting `https://ironcityit.com/client_id` on the token, or
+Organizations configured so `org_name` resolves the tenant. `exchange.js` accepts either.
