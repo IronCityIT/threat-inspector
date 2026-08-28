@@ -19,6 +19,20 @@ class Target:
     kind: str  # one of: ip, url, domain, hostname
     value: str  # normalized value (ip string, url, or host)
 
+    @property
+    def as_url(self) -> str:
+        """
+        This target addressed as a URL.
+
+        A web module needs a URL, but an operator types a bare domain — that is the
+        natural thing to enter, and targets.py deliberately accepts it. Deriving
+        https://<host> here is what lets one parser genuinely serve every tool, instead
+        of url-only modules quietly declining every domain they are handed.
+        """
+        if self.kind == "url":
+            return self.value
+        return f"https://{self.value}"
+
 
 def _classify(token: str) -> list[Target]:
     token = token.strip()

@@ -18,7 +18,7 @@ import json
 import sys
 
 import registry
-from targets import parse_targets
+from targets import parse_targets, Target
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,11 +86,36 @@ def main(argv: list[str] | None = None) -> int:
     # run stops exactly here — after targets and selection have been validated for
     # real, before anything reaches a live host. Emitting an empty findings set is
     # the honest result: nothing was scanned, so nothing was found.
+    # A module that wants a URL can run against a domain, hostname or IP by addressing
+    # it as one. Without this, entering "example.com" — the obvious thing to type —
+    # silently skipped every url-only module and produced a green run with no findings.
+    def _for_module(module, target: Target) -> Target | None:
+        if module.applies_to(target.kind):
+            return target
+        if "url" in module.target_kinds and target.kind in ("domain", "hostname", "ip"):
+            return Target(raw=target.raw, kind="url", value=target.as_url)
+        return None
+
+    skipped: list[dict[str, str]] = []
+    executed: set[str] = set()
+
     if not args.dry_run:
         for t in targets:
             for m in mods:
-                if m.applies_to(t.kind):
-                    findings.extend(f.to_dict() for f in m.run(t, ctx))
+                resolved = _for_module(m, t)
+                if resolved is None:
+                    # Recorded, never silent: a module that did not run must not be
+                    # reported as though it had.
+                    skipped.append(
+                        {
+                            "module": m.name,
+                            "target": t.value,
+                            "reason": f"module accepts {'/'.join(m.target_kinds)}, target is {t.kind}",
+                        }
+                    )
+                    continue
+                executed.add(m.name)
+                findings.extend(f.to_dict() for f in m.run(resolved, ctx))
     else:
         print(
             f"dry-run: validated {len(targets)} target(s) and "
@@ -105,7 +130,12 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "client": args.client,
                 "scan_id": args.scan_id,
-                "modules_run": [m.name for m in mods],
+                # What actually executed, not what was selected. In a dry run nothing
+                # runs, so the selected set is the honest answer there.
+                "modules_run": (
+                    [m.name for m in mods] if args.dry_run else sorted(executed)
+                ),
+                "modules_skipped": [] if args.dry_run else skipped,
                 "target_count": len(targets),
                 "dry_run": args.dry_run,
                 "findings": findings,
