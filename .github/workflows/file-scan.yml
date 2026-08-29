@@ -96,7 +96,11 @@ jobs:
 
       - name: Install ingestion dependencies
         # Only the parser runtime deps — no scanners, no heavy AI stack.
-        run: pip install --quiet pandas openpyxl lxml
+        # pyyaml/python-dotenv/pydantic-settings are not optional: importing
+        # threat_inspector.parsers pulls in threat_inspector.config, which loads
+        # Settings. Without them the ingest dies on ModuleNotFoundError before
+        # reading a single export.
+        run: pip install --quiet pandas openpyxl lxml pyyaml python-dotenv pydantic pydantic-settings
 
       - name: Ingest exports
         env:
