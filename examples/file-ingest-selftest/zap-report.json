@@ -1,0 +1,27 @@
+{
+  "site": [
+    {
+      "@name": "https://app.selftest.invalid",
+      "alerts": [
+        {
+          "alert": "SQL Injection",
+          "riskcode": "3",
+          "desc": "<p>Synthetic finding. Not a real vulnerability in any system.</p>",
+          "solution": "Parameterize the query.",
+          "cweid": "89",
+          "pluginid": "40018",
+          "instances": [{"uri": "https://app.selftest.invalid/login"}]
+        },
+        {
+          "alert": "Information Disclosure - Server Banner",
+          "riskcode": "0",
+          "desc": "Synthetic finding. Not a real vulnerability in any system.",
+          "solution": "Suppress the banner.",
+          "cweid": "200",
+          "pluginid": "10036",
+          "instances": [{"uri": "https://app.selftest.invalid/"}]
+        }
+      ]
+    }
+  ]
+}

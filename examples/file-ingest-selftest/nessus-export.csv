@@ -1,0 +1,3 @@
+Plugin ID,Name,Risk,Host,Protocol,Port,Synopsis,Description,Solution,CVE
+19506,Nessus Scan Information,None,10.255.255.1,tcp,0,Synthetic fixture row.,Synthetic fixture row. Not a real finding.,n/a,
+51192,SSL Certificate Cannot Be Trusted,Medium,10.255.255.1,tcp,443,Synthetic fixture row.,Synthetic fixture row. Not a real finding.,Install a trusted certificate.,
