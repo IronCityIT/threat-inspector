@@ -7,9 +7,21 @@ name: Iron City Threat Inspector - Scan
 #   group:    quick | standard | deep
 # Findings flow through the shared analyze/store pipeline (_consensus-store.yml).
 # White-label: no underlying scanner names appear in client-visible output.
+#
+# Two entry points:
+#   workflow_dispatch — operator-driven, target and client_name are required.
+#   schedule          — standing weekly baseline scan. A cron event carries no
+#                       inputs at all, so the run falls back to the baseline
+#                       target/client below. Every downstream job therefore
+#                       reads the RESOLVED values (scan job outputs), never
+#                       `inputs.*` directly, which are empty on a cron run.
 # ============================================================
 
 on:
+  # Mondays 07:00 UTC — before the US business week, off the top of the hour
+  # so it is not competing with the rest of the fleet's cron traffic.
+  schedule:
+    - cron: '0 7 * * 1'
   workflow_dispatch:
     inputs:
       target:
@@ -46,8 +58,14 @@ on:
 permissions:
   contents: read
 
+# Baseline used only when the run has no dispatch inputs (i.e. schedule).
+env:
+  BASELINE_TARGET: ironcityit.com
+  BASELINE_CLIENT: ironcity
+  BASELINE_GROUP: standard
+
 concurrency:
-  group: scan-${{ inputs.client_name }}
+  group: scan-${{ inputs.client_name || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
@@ -57,6 +75,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       scan_id: ${{ steps.ids.outputs.scan_id }}
+      target: ${{ steps.ids.outputs.target }}
+      client_name: ${{ steps.ids.outputs.client_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -64,18 +84,35 @@ jobs:
       - name: Resolve scan identifiers
         id: ids
         env:
-          TARGET: ${{ inputs.target }}
-          CLIENT_NAME: ${{ inputs.client_name }}
+          TARGET_IN: ${{ inputs.target }}
+          CLIENT_NAME_IN: ${{ inputs.client_name }}
           SCAN_ID_IN: ${{ inputs.scan_id }}
+          GROUP_IN: ${{ inputs.group }}
+          EVENT: ${{ github.event_name }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ -z "${TARGET:-}" ]; then echo "::error::target is required"; exit 1; fi
-          if [ -z "${CLIENT_NAME:-}" ]; then echo "::error::client_name is required"; exit 1; fi
+          TARGET="${TARGET_IN:-}"
+          CLIENT_NAME="${CLIENT_NAME_IN:-}"
+          GROUP="${GROUP_IN:-}"
+          # A cron event supplies no inputs, so the standing baseline applies.
+          # A manual dispatch still has to say what it is scanning.
+          if [ "$EVENT" = "schedule" ]; then
+            TARGET="${TARGET:-$BASELINE_TARGET}"
+            CLIENT_NAME="${CLIENT_NAME:-$BASELINE_CLIENT}"
+            GROUP="${GROUP:-$BASELINE_GROUP}"
+          fi
+          if [ -z "$TARGET" ]; then echo "::error::target is required"; exit 1; fi
+          if [ -z "$CLIENT_NAME" ]; then echo "::error::client_name is required"; exit 1; fi
           SCAN_ID="${SCAN_ID_IN:-}"
           [ -z "$SCAN_ID" ] && SCAN_ID="ti-${RUN_ID}"
-          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
-          echo "Inputs validated (client: $CLIENT_NAME, scan_id: $SCAN_ID)"
+          {
+            echo "scan_id=$SCAN_ID"
+            echo "target=$TARGET"
+            echo "client_name=$CLIENT_NAME"
+            echo "group=${GROUP:-$BASELINE_GROUP}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Inputs resolved (event: $EVENT, client: $CLIENT_NAME, scan_id: $SCAN_ID)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -93,11 +130,11 @@ jobs:
 
       - name: Run modular scan
         env:
-          TARGET: ${{ inputs.target }}
-          CLIENT_NAME: ${{ inputs.client_name }}
+          TARGET: ${{ steps.ids.outputs.target }}
+          CLIENT_NAME: ${{ steps.ids.outputs.client_name }}
           SCAN_ID: ${{ steps.ids.outputs.scan_id }}
           MODULES: ${{ inputs.modules }}
-          GROUP: ${{ inputs.group }}
+          GROUP: ${{ steps.ids.outputs.group }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           mkdir -p results
@@ -154,14 +191,16 @@ jobs:
     uses: ./.github/workflows/_consensus-store.yml
     with:
       scan_type: modular_scan
-      target: ${{ inputs.target }}
-      client_name: ${{ inputs.client_name }}
+      target: ${{ needs.scan.outputs.target }}
+      client_name: ${{ needs.scan.outputs.client_name }}
       scan_id: ${{ needs.scan.outputs.scan_id }}
       findings_artifact: ti-findings-${{ needs.scan.outputs.scan_id }}
     secrets: inherit
 
   # Without this the dashboard would show a scan stuck at "running" forever:
   # when `scan` fails, `pipeline` is skipped and nothing is ever written.
+  # NOTE: the scan job's outputs are empty when the scan job itself failed
+  # early, so this falls back to the same baseline the scan job would have used.
   report-failure:
     name: Report Failure
     needs: [scan, pipeline]
@@ -169,9 +208,9 @@ jobs:
     uses: ./.github/workflows/_report-failure.yml
     with:
       scan_type: modular_scan
-      target: ${{ inputs.target }}
-      client_name: ${{ inputs.client_name }}
-      scan_id: ${{ needs.scan.outputs.scan_id }}
+      target: ${{ needs.scan.outputs.target || inputs.target || 'ironcityit.com' }}
+      client_name: ${{ needs.scan.outputs.client_name || inputs.client_name || 'ironcity' }}
+      scan_id: ${{ needs.scan.outputs.scan_id || format('ti-{0}', github.run_id) }}
       run_id: ${{ github.run_id }}
       scan_id_prefix: ti
       failed_stage: ${{ needs.scan.result == 'failure' && 'scan' || 'analyze-store' }}
