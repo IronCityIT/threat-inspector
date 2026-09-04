@@ -6,7 +6,8 @@
   "scripts": {
     "test:ui": "node tests/ui/dashboard.spec.mjs",
     "test:functions": "node tests/functions/auth.test.mjs && node tests/functions/tenancy.test.mjs",
-    "test": "npm run test:functions && npm run test:ui"
+    "test": "npm run test:functions && npm run test:ui",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-threat-inspector \"node tests/functions/rules.test.mjs\""
   },
   "devDependencies": {
     "playwright": "^1.49.1"

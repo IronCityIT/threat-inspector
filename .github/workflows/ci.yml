@@ -95,6 +95,32 @@ jobs:
       - name: Browser tests
         run: npm run test:ui
 
+  # The ONLY thing that can prove "no cross-tenant leakage" behaviourally.
+  # tests/test_firestore_rules.py asserts the shape of the rules; this loads the
+  # committed rules into a real Firestore emulator, seeds two tenants, and tries
+  # to read across them. It needs Java (preinstalled on GitHub runners) and
+  # firebase-tools, neither of which was available in the environment this
+  # branch was developed in — see docs/SDLC_STATUS.md §4.
+  rules:
+    name: Firestore rules (emulator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci
+      - run: npm install --no-save firebase-tools @firebase/rules-unit-testing firebase
+      # emulators:exec starts the emulator, exports FIRESTORE_EMULATOR_HOST into
+      # the child, and exits non-zero if the child does. The test SKIPS loudly
+      # rather than passing if that variable is somehow absent.
+      - name: Rules tests
+        run: npx firebase emulators:exec --only firestore --project demo-threat-inspector "node tests/functions/rules.test.mjs"
+
   workflows:
     name: Workflow YAML parses
     runs-on: ubuntu-latest
