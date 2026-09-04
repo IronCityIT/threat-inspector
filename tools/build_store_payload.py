@@ -30,6 +30,102 @@ from typing import Any
 # Firestore's 1 MiB limit, which would fail the write and lose the findings too.
 MAX_ERRORS_ON_RECORD = 50
 
+# Firestore rejects any document over 1 MiB, and a rejected write loses the
+# WHOLE scan, not just the excess. Measured against realistic findings (~520
+# bytes each) that ceiling arrives at roughly 2,000 findings — well within reach
+# of a /24 sweep or a broad subdomain enumeration.
+FIRESTORE_DOC_LIMIT = 1_048_576
+
+# The budget we actually pack to. Firestore measures its own encoding (field
+# names, type tags, index entries), not our JSON, so the two differ; the server
+# also adds a timestamp after we hand the document over. The headroom absorbs
+# both. Better to store 1,800 findings than to have 2,100 rejected.
+DOC_BUDGET = 800_000
+
+# Truncation drops the least important findings first, never the most severe.
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# A single finding with a runaway evidence blob can eat the budget on its own.
+MAX_DETAIL_CHARS = 4_000
+MAX_EVIDENCE_CHARS = 4_000
+
+
+def _rank(finding: dict) -> int:
+    return _SEVERITY_RANK.get(str(finding.get("severity", "info")).lower(), 4)
+
+
+def clamp_finding(finding: dict) -> dict:
+    """Bound one finding's free-text fields.
+
+    One pathological finding (a scanner echoing a whole response body into
+    `evidence`) should not cost every other finding its place in the document.
+    """
+    out = dict(finding)
+    detail = out.get("detail")
+    if isinstance(detail, str) and len(detail) > MAX_DETAIL_CHARS:
+        out["detail"] = detail[:MAX_DETAIL_CHARS] + "… [truncated]"
+    evidence = out.get("evidence")
+    if isinstance(evidence, dict):
+        clamped = {}
+        for key, value in evidence.items():
+            if isinstance(value, str) and len(value) > MAX_EVIDENCE_CHARS:
+                clamped[key] = value[:MAX_EVIDENCE_CHARS] + "… [truncated]"
+            else:
+                clamped[key] = value
+        out["evidence"] = clamped
+    return out
+
+
+def fit_to_budget(payload: dict, budget: int = DOC_BUDGET) -> dict:
+    """Trim `findings` until the document fits, most-severe findings kept.
+
+    Returns the payload (mutated in place). The severity `summary` is NOT
+    recomputed: it is built from the complete finding set before this runs, so
+    the counts a client sees stay true even when the list they can page through
+    is shorter. `summary.stored` and `summary.truncated` say so explicitly
+    rather than leaving the discrepancy to be discovered.
+    """
+    findings = [clamp_finding(f) for f in payload.get("findings") or []]
+    total = len(findings)
+    payload["findings"] = findings
+    payload["summary"]["stored"] = total
+    payload["summary"]["truncated"] = False
+
+    if len(json.dumps(payload)) <= budget:
+        return payload
+
+    # Most severe first, so what survives is what matters.
+    findings.sort(key=_rank)
+
+    # Overhead of everything that is not the findings list.
+    payload["findings"] = []
+    overhead = len(json.dumps(payload))
+    room = budget - overhead
+    kept: list[dict] = []
+    used = 2  # the enclosing [] of the findings array
+    for finding in findings:
+        cost = len(json.dumps(finding)) + 1  # + the separating comma
+        if used + cost > room:
+            break
+        kept.append(finding)
+        used += cost
+
+    payload["findings"] = kept
+    payload["summary"]["stored"] = len(kept)
+    payload["summary"]["truncated"] = True
+    payload["diagnostics"]["truncation"] = {
+        "reason": "document_size_limit",
+        "findings_total": total,
+        "findings_stored": len(kept),
+        "budget_bytes": budget,
+        "note": (
+            "Severity counts above reflect the full result set. "
+            "The stored finding list keeps the most severe findings; "
+            "the complete set is in the scan's build artifact."
+        ),
+    }
+    return payload
+
 
 def summarize(findings: list[dict]) -> dict[str, int]:
     """Count findings by severity, plus a total."""
@@ -86,7 +182,11 @@ def build_payload(scan: dict, meta: dict[str, str]) -> dict[str, Any]:
             "message": "every selected capability failed to run",
             "module_errors": module_errors[:MAX_ERRORS_ON_RECORD],
         }
-    return payload
+
+    # Last step, so it sees the finished document. A write Firestore rejects
+    # loses the entire scan, so the document is packed to fit rather than
+    # offered whole and refused.
+    return fit_to_budget(payload)
 
 
 def load_scan(path: Path | None) -> dict:
