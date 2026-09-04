@@ -64,6 +64,13 @@ exports.storeScanResults = onRequest(
       scan_type: body.scan_type || "unknown",
       target: body.target || null,
       status: body.status || "completed",
+      // The scan's own health, distinct from whether the RUN completed. An empty
+      // findings list means "nothing found" or "every capability failed", and a
+      // client must not be shown the first when it was the second.
+      scan_status: body.scan_status || null,
+      // Which capabilities ran, which degraded, and why. Iron City module ids
+      // only — never an underlying scanner's name.
+      diagnostics: body.diagnostics || null,
       summary: body.summary || {},
       findings: Array.isArray(body.findings) ? body.findings : [],
       consensus: body.consensus || null,

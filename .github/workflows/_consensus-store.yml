@@ -104,12 +104,20 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # Needed for tools/build_store_payload.py.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download findings
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.findings_artifact }}
           path: incoming
 
+      # The payload builder is a tested module (tools/build_store_payload.py +
+      # tests/test_store_payload.py), not an inline heredoc. It decides what the
+      # client is ultimately shown about their scan, so it is covered by CI
+      # rather than only exercised in a live run.
       - name: Build storeScanResults payload
         env:
           SCAN_TYPE: ${{ inputs.scan_type }}
@@ -119,37 +127,16 @@ jobs:
           TARGET: ${{ inputs.target }}
           CONSENSUS_STATUS: ${{ needs.analyze.result }}
         run: |
-          python3 - <<'PYEOF'
-          import json, os, glob, datetime
-
-          findings = {"findings": [], "modules_run": [], "target_count": 0}
-          matches = glob.glob("incoming/**/findings.json", recursive=True) + glob.glob("incoming/findings.json")
-          if matches:
-              with open(matches[0]) as fh:
-                  findings = json.load(fh)
-
-          fl = findings.get("findings", [])
-          summary = {"total": len(fl)}
-          for f in fl:
-              sev = str(f.get("severity", "info")).lower()
-              summary[sev] = summary.get(sev, 0) + 1
-
-          payload = {
-              "scan_type": os.environ["SCAN_TYPE"],
-              "scan_id": os.environ["SCAN_ID"],
-              "client_id": os.environ["CLIENT_ID"],
-              "client_name": os.environ["CLIENT_NAME"],
-              "target": os.environ["TARGET"],
-              "status": "completed",
-              "consensus": {"status": os.environ.get("CONSENSUS_STATUS", "unknown")},
-              "summary": summary,
-              "findings": fl,
-              "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-          }
-          with open("payload.json", "w") as fh:
-              json.dump(payload, fh)
-          print(f"Payload built: {summary['total']} findings, client_id={payload['client_id']}")
-          PYEOF
+          set -euo pipefail
+          python3 tools/build_store_payload.py \
+            --findings incoming \
+            --out payload.json \
+            --scan-type "$SCAN_TYPE" \
+            --scan-id "$SCAN_ID" \
+            --client-id "$CLIENT_ID" \
+            --client-name "$CLIENT_NAME" \
+            --target "$TARGET" \
+            --consensus-status "${CONSENSUS_STATUS:-unknown}"
 
       # Validation gate: never POST a payload that is not well-formed JSON.
       - name: Validate payload JSON
