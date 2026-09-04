@@ -76,21 +76,38 @@ for f in .github/workflows/*.yml; do
 Test count went **41 → 225** (182 pytest + 27 function + 16 browser), plus 44
 end-to-end smoke checks and 15 emulator rules cases that are written but unrun.
 
-### Fresh-environment validation
+### Fresh-environment validation — DONE
 
 The committed tree was cloned clean (`git clone --branch
 feat/threat-inspector-hardening`) and inspected: 104 tracked files, no
 `node_modules`, `.venv`, `__pycache__` or `.coverage` tracked.
 
-A full isolated `pip install` into a fresh venv could NOT be completed on this
-machine — `python3 -m venv` produces no `pip` here (`ensurepip` unavailable),
-and the box was already saturated by the firebase-tools attempt. What is
-verified instead, and is the substantive half of the same question: **the
-current environment has none of torch, transformers, nltk or scikit-learn
-installed**, and the full 182-test suite, the 44-check smoke test and the API
-suite all pass against it. The declared runtime set is sufficient, and the
-removed ML stack demonstrably is not needed. `pip-audit` also resolved
-`requirements.txt` and `requirements-dev.txt` in full.
+A fresh virtualenv was then built from the declared requirements alone:
+
+    python3 -m venv .venv
+    .venv/bin/python3 -m pip install -r requirements.txt -r requirements-dev.txt
+    # PIP_EXIT=0, 234 packages, 87m wall / 1m40s CPU (this machine is I/O-bound)
+
+Against that isolated interpreter — `sys.prefix` inside the venv,
+`include-system-site-packages = false`:
+
+| Check | Result |
+|---|---|
+| Every declared runtime dep imports | ✅ pandas, fastapi, pydantic-settings, lxml, openpyxl, jinja2, click, rich, uvicorn, sqlalchemy, httpx, dateutil, tabulate, markdown, yaml, dotenv, alembic |
+| torch / transformers / nltk / scikit-learn / ollama | ✅ **absent** — confirming they are not runtime dependencies |
+| `python3 -m pytest -q` | ✅ **182 passed** |
+| `python3 tools/smoke_test.py` | ✅ **44 passed, 0 failed, 0 skipped** |
+
+So the declared runtime set is sufficient for the whole product, and the ML
+stack removed in `e6142e3` is demonstrably not needed by any code path the
+tests or the end-to-end smoke test reach.
+
+> Recovery note, for anyone reproducing this: the venv had to be repaired
+> mid-session. An earlier `rm -rf` of the scratch clone partially failed on this
+> filesystem, deleting `bin/python3` and `pyvenv.cfg` while leaving
+> `site-packages` intact; both were recreated by hand. That is an artefact of
+> the environment, not of the project, and the isolation was re-verified
+> (`sys.prefix` and a 234-entry `site-packages`) before the runs above.
 
 ### What the smoke test actually proves
 
@@ -220,7 +237,6 @@ These are **not** covered by any gate in this repo, and no claim is made about t
 | The authenticated ingest path end to end | `verifyIngest()` is unit-tested in isolation (15 cases). The full POST → 401/503/200 round trip needs a deployed function or the emulator. | A deploy, or the emulator once available. |
 | `cve_lookup`, `subdomain_enum`, `web_vuln_scan` against live hosts | Their parsers are unit-tested against captured output, but subfinder and nuclei are not installed, so the modules degrade to "capability unavailable". That degradation path IS exercised; the live path is not. `port_scan` and `service_fingerprint` no longer belong on this list — they now run through real nmap 7.94 in the smoke test. | Installing those two scanners in the smoke environment, as was done for nmap. |
 | Consensus engine integration | `_consensus-store.yml` calls `IronCityIT/consensus-engine@main`. Not run from this branch. | A dispatched workflow run. |
-| A fully isolated fresh `pip install` | `python3 -m venv` produces no pip on this machine (`ensurepip` unavailable). See the fresh-environment note in §2 for what was verified instead. | Any environment with a working `ensurepip`, or CI, which does exactly this on every run. |
 
 ---
 
