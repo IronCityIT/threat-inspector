@@ -186,3 +186,113 @@ def test_ingest_cli_no_files_is_error(capsys):
 def test_ingest_cli_unknown_module_is_error(capsys):
     rc = ingest.main(["--modules", "nope", "--files", "x.json"])
     assert rc == 2
+
+
+# ---- ingest runtime: corrupt uploads must not pass for clean ones --------
+# The parsers already record why a file failed (ParseResult.errors), but
+# to_findings() only read `vulnerabilities`, so a malformed upload surfaced as a
+# successful ingest with zero findings -- byte-identical to a clean export.
+
+
+def _run_ingest(argv):
+    """Drive ingest.main() and return the JSON document it emitted."""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = ingest.main(argv)
+    out = buf.getvalue()
+    return code, (json.loads(out) if out.strip() else None)
+
+
+def _write(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_text(text)
+    return p
+
+
+def test_unparseable_file_is_reported_as_failed_not_ingested(tmp_path):
+    bad = _write(tmp_path, "broken.xml", "\x00\x01 not xml at all <<<")
+    code, doc = _run_ingest(["--group", "ingest", "--files", str(bad)])
+
+    assert code == 0
+    assert doc["files_ingested"] == [], "a file that failed to parse is not ingested"
+    assert len(doc["files_failed"]) == 1
+    assert doc["files_failed"][0]["file"] == str(bad)
+    assert doc["files_failed"][0]["errors"], "the parser's reason must be carried up"
+    assert doc["status"] == "failed"
+
+
+def test_one_bad_upload_does_not_discard_the_good_ones(tmp_path):
+    _write(tmp_path, "broken.xml", "\x00\x01 not xml <<<")
+    good = tmp_path / "zap-report.json"
+    good.write_text(
+        json.dumps(
+            {
+                "site": [
+                    {
+                        "@name": "https://app.selftest.invalid",
+                        "alerts": [
+                            {
+                                "name": "Synthetic Alert",
+                                "riskdesc": "High (Medium)",
+                                "desc": "Synthetic finding.",
+                                "solution": "n/a",
+                                "instances": [{"uri": "https://app.selftest.invalid/x"}],
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+    )
+    code, doc = _run_ingest(["--group", "ingest", "--files-dir", str(tmp_path)])
+
+    assert code == 0
+    assert doc["status"] == "partial"
+    assert len(doc["findings"]) >= 1, "the healthy file's findings must survive"
+    assert [f["file"] for f in doc["files_failed"]] == [str(tmp_path / "broken.xml")]
+
+
+def test_strict_exits_non_zero_when_a_file_fails(tmp_path):
+    bad = _write(tmp_path, "broken.xml", "\x00\x01 not xml <<<")
+    code, doc = _run_ingest(["--group", "ingest", "--files", str(bad), "--strict"])
+    assert code == 1
+    assert doc["status"] == "failed", "the document is still emitted for diagnosis"
+
+
+def test_a_module_that_raises_is_contained(tmp_path, monkeypatch):
+    """Parser errors arrive in the report; an outright exception must too."""
+
+    class Exploding:
+        name = "exploding"
+
+        def ingest_report(self, file, ctx):
+            raise RuntimeError("parser exploded")
+
+    report = ingest.ingest_file(Exploding(), tmp_path / "x.xml", {})
+    assert report.findings == []
+    assert report.errors == ["RuntimeError: parser exploded"]
+
+
+def test_no_input_files_exits_two_and_names_the_extensions(tmp_path, capsys):
+    code = ingest.main(["--group", "ingest", "--files-dir", str(tmp_path)])
+    assert code == 2
+    assert ".xml" in capsys.readouterr().err
+
+
+def test_default_ingest_report_wraps_a_plain_ingest_only_module(tmp_path):
+    """A FileModule that implements only ingest() keeps working."""
+
+    class Plain(FileModule):
+        name = "plain"
+        extensions = (".txt",)
+
+        def ingest(self, file, ctx):
+            return [Finding(module="plain", target="t", severity="info", title="ok")]
+
+    report = Plain().ingest_report(tmp_path / "a.txt", {})
+    assert [f.title for f in report.findings] == ["ok"]
+    assert report.errors == []
+    assert report.ok is True
