@@ -14,7 +14,7 @@ from typing import Any
 
 from base import Finding, ScanModule
 
-from ._util import http_head
+from ._util import http_probe
 
 # Management/admin surfaces that commonly ship with default credentials.
 _ADMIN_PATHS = (
@@ -30,25 +30,39 @@ _ADMIN_PATHS = (
 )
 
 
+# How each status class reads. An interface that answers 401/403 is present and
+# asking for credentials — the strongest signal there is for this check — so it
+# is reported at least as loudly as one that answers 200.
+_AUTH_STATUSES = (401, 403, 407)
+
+
 def evaluate(results: dict[str, int | None], target_value: str) -> list[Finding]:
     """Map path -> HTTP status into findings for reachable interfaces (pure — tested)."""
     findings: list[Finding] = []
     for path, status in results.items():
         if status is None:
-            continue
-        # Reachable (not missing, not server error) = an exposed interface worth review.
-        if status == 404 or status >= 500:
-            continue
+            continue  # no HTTP response at all — nothing is exposed here
+        if status == 404 or status == 410 or status >= 500:
+            continue  # absent, or broken enough not to be a usable interface
+        if status in _AUTH_STATUSES:
+            severity = "medium"
+            detail = (
+                f"{path} responded {status} — a management interface is present and "
+                "prompting for credentials. Verify it does not accept default or "
+                "weak credentials, and that it should be reachable from here at all."
+            )
+        else:
+            severity = "medium"
+            detail = (
+                f"{path} responded {status}. Verify it does not accept default or weak credentials."
+            )
         findings.append(
             Finding(
                 module="default_creds_check",
                 target=target_value,
-                severity="medium",
+                severity=severity,
                 title=f"Exposed management interface: {path}",
-                detail=(
-                    f"{path} responded ({status}). Verify it does not accept "
-                    "default or weak credentials."
-                ),
+                detail=detail,
                 evidence={"path": path, "status": status},
             )
         )
@@ -72,7 +86,11 @@ class DefaultCredsCheck(ScanModule):
         base = _to_base_url(target)
         results: dict[str, int | None] = {}
         for path in _ADMIN_PATHS:
-            headers = http_head(f"{base}{path}", timeout=10)
-            # http_head returns headers on 2xx/3xx; None on error/4xx/5xx via urlopen.
-            results[path] = 200 if headers is not None else None
+            # http_probe, NOT http_head. http_head collapses every non-2xx/3xx
+            # into None, so this module used to hardcode `200 if headers else
+            # None` and could not see a 401/403 at all — which meant the single
+            # most telling response for an exposed admin panel was discarded,
+            # and evaluate()'s 404/5xx branch was unreachable from here.
+            probe = http_probe(f"{base}{path}", timeout=10)
+            results[path] = probe.status if probe is not None else None
         return evaluate(results, target.value)

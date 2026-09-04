@@ -143,3 +143,39 @@ def test_default_creds_eval():
 def test_finding_rejects_bad_severity():
     with pytest.raises(ValueError):
         Finding(module="m", target="t", severity="explosive", title="x")
+
+
+# ---- default_creds_check: status handling -------------------------------
+# This module used to hardcode `200 if headers else None`, because http_head
+# collapses every non-2xx/3xx into None. A 401/403 -- an admin panel that is
+# present and prompting for credentials -- was therefore invisible, and
+# evaluate()'s 404/5xx branch was unreachable from the real caller.
+
+
+@pytest.mark.parametrize("status", [401, 403, 407])
+def test_auth_challenge_is_reported_as_an_exposed_interface(status):
+    findings = evaluate({"/admin": status}, "10.0.0.1")
+    assert len(findings) == 1
+    assert findings[0].evidence["status"] == status
+    assert "credentials" in findings[0].detail
+
+
+@pytest.mark.parametrize("status", [404, 410, 500, 502, 503])
+def test_absent_or_broken_paths_are_not_reported(status):
+    assert evaluate({"/admin": status}, "10.0.0.1") == []
+
+
+def test_no_http_response_is_not_reported():
+    assert evaluate({"/admin": None}, "10.0.0.1") == []
+
+
+@pytest.mark.parametrize("status", [200, 301, 302, 400])
+def test_reachable_interfaces_are_reported_with_their_status(status):
+    findings = evaluate({"/admin": status}, "10.0.0.1")
+    assert len(findings) == 1
+    assert findings[0].evidence == {"path": "/admin", "status": status}
+
+
+def test_every_probed_path_is_evaluated_independently():
+    findings = evaluate({"/admin": 401, "/missing": 404, "/console": 200}, "10.0.0.1")
+    assert {f.evidence["path"] for f in findings} == {"/admin", "/console"}
