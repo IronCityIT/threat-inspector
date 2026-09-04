@@ -1,7 +1,7 @@
 # SDLC Status — Threat Inspector
 
 **Branch:** `feat/threat-inspector-hardening`
-**Last verified:** 2026-09-04
+**Last verified:** 2026-09-04 (second validation pass)
 **Scope of this branch:** completion and hardening of the local end-to-end
 product. **Nothing here has been merged or deployed.**
 
@@ -22,7 +22,9 @@ ruff check .
 mypy module_framework src
 python3 -m pytest -q
 
-# End-to-end: real subprocesses, real sockets, real fixtures
+# End-to-end: real subprocesses, real sockets, real fixtures.
+# Install nmap first, or the four external-scanner checks SKIP rather than pass.
+sudo apt-get install -y nmap
 python3 tools/smoke_test.py
 
 # JavaScript. Order matters: the function tests import functions/index.js, so
@@ -31,7 +33,16 @@ npm ci
 (cd functions && npm ci && npm audit --audit-level=high)
 for f in functions/*.js dashboard/public/*.js; do node --check "$f"; done
 npx playwright install --with-deps chromium     # first run only
-npm test                                        # functions (15) + browser (16)
+npm test                                        # functions (27) + browser (16)
+
+# Firestore rules, behaviourally. Needs Java + firebase-tools; skips loudly
+# without them. See §4 — this has NOT been executed on this branch.
+npm install --no-save firebase-tools @firebase/rules-unit-testing firebase
+npm run test:rules
+
+# Dependency advisories
+pip-audit -r requirements.txt -r requirements-dev.txt
+(cd functions && npm audit --audit-level=high)
 
 # Dashboard catalog must match the live registries
 python3 tools/build_catalog.py && git diff --exit-code -- dashboard/public/catalog.json
@@ -47,20 +58,39 @@ for f in .github/workflows/*.yml; do
 
 | Gate | Command | Result |
 |---|---|---|
-| Format | `ruff format --check .` | ✅ 52 files formatted |
+| Format | `ruff format --check .` | ✅ 56 files formatted |
 | Lint | `ruff check .` | ✅ all checks passed |
-| Types | `mypy module_framework src` | ✅ 41 files, no issues |
-| Unit + integration | `python3 -m pytest -q` | ✅ **136 passed** |
-| End-to-end smoke | `python3 tools/smoke_test.py` | ✅ **40/40 checks** |
-| Function auth | `npm run test:functions` | ✅ **15 passed** |
+| Types | `mypy module_framework src` | ✅ 42 files, no issues |
+| Unit + integration | `python3 -m pytest -q` | ✅ **182 passed** |
+| End-to-end smoke | `python3 tools/smoke_test.py` | ✅ **44/44 checks**, 0 skipped |
+| Function auth + tenancy | `npm run test:functions` | ✅ **27 passed** (15 auth + 12 tenancy) |
 | Dashboard browser | `npm run test:ui` | ✅ **16 passed** in Chromium |
+| Firestore rules (behaviour) | `npm run test:rules` | ⚠️ **NOT RUN** — no emulator here, see §4 |
 | Workflow YAML | `yaml.safe_load` × 10 | ✅ all parse |
 | JS syntax | `node --check` × 6 | ✅ all parse |
 | Catalog freshness | `build_catalog.py` + `git diff` | ✅ zero diff |
 | Functions lockfile | `npm ci --dry-run` | ✅ resolves (241 packages pinned) |
-| Functions audit | `npm audit --audit-level=high` | ✅ passes — **12 moderate** advisories remain, see §6.7 |
+| Python advisories | `pip-audit -r requirements*.txt` | ✅ **no known vulnerabilities** |
+| Functions advisories | `npm audit --audit-level=high` | ✅ passes — **12 moderate** remain, see §6.7 |
 
-Test count went from **41 → 167** (136 pytest + 15 function + 16 browser).
+Test count went **41 → 225** (182 pytest + 27 function + 16 browser), plus 44
+end-to-end smoke checks and 15 emulator rules cases that are written but unrun.
+
+### Fresh-environment validation
+
+The committed tree was cloned clean (`git clone --branch
+feat/threat-inspector-hardening`) and inspected: 104 tracked files, no
+`node_modules`, `.venv`, `__pycache__` or `.coverage` tracked.
+
+A full isolated `pip install` into a fresh venv could NOT be completed on this
+machine — `python3 -m venv` produces no `pip` here (`ensurepip` unavailable),
+and the box was already saturated by the firebase-tools attempt. What is
+verified instead, and is the substantive half of the same question: **the
+current environment has none of torch, transformers, nltk or scikit-learn
+installed**, and the full 182-test suite, the 44-check smoke test and the API
+suite all pass against it. The declared runtime set is sufficient, and the
+removed ML stack demonstrably is not needed. `pip-audit` also resolved
+`requirements.txt` and `requirements-dev.txt` in full.
 
 ### What the smoke test actually proves
 
@@ -75,6 +105,8 @@ entry points (3)      both catalogs; `python -m module_framework.cli`
 dry run (4)           executes nothing, keeps the full schema
 active scan (7)       real findings over a real socket, incl. a 401-protected
                       admin path detected through a real HTTP response
+real scanners (4)     port_scan and service_fingerprint driven through ACTUAL
+                      nmap 7.94 against a listener the test owns on 127.0.0.1
 input validation (5)  exit 2, no traceback; file:// and the cloud metadata
                       endpoint refused; unknown module lists what exists
 containment (2)       an unreachable target does not sink the scan
@@ -84,6 +116,18 @@ store payload (7)     byte-level '{' gate, summary totals, diagnostics, and a
                       fully failed scan storing as failed rather than completed
 catalog (2)           rebuilds and matches the committed file
 ```
+
+A check that cannot run is reported as `SKIPPED (NOT PROVEN)` and counted
+separately, never as a pass. With nmap absent the four scanner checks skip and
+the summary line says `40 passed, 0 failed, 4 skipped`.
+
+### Only authorized targets are ever scanned
+
+Every active-scan check in this repo points at `127.0.0.1`, at a listener the
+test process starts and owns. Nothing here scans a third party, and the loopback
+guard means those checks must pass `--allow-local` explicitly to do it. The
+ingest fixtures are unroutable by construction (`10.255.255.0/24`,
+`*.selftest.invalid` — RFC 2606).
 
 ### Performance
 
@@ -119,6 +163,16 @@ Each item was reproduced against the code before being changed.
 | 14 | `functions/` had no `package-lock.json`; `npm ci \|\| npm install` always degraded to `npm install` | flagged in PRODUCTIZE_NOTES.md, never fixed |
 | 15 | `python -m module_framework.cli`, documented in the module's own docstring, crashed | `ModuleNotFoundError: No module named 'registry'` |
 
+Second validation pass:
+
+| # | Defect | Evidence it was real |
+|---|---|---|
+| 16 | **The local REST API had no authentication at all.** `client_id` was a plain query parameter, so naming a tenant was enough to read their uploaded scan data. It ships in the Dockerfile bound to `0.0.0.0:8000` with docker-compose publishing that port. | `POST /api/v1/scans/upload?client_id=acme` → 200, 8 vulnerabilities; `GET /api/v1/vulnerabilities?client_id=acme` → 200, all 8 returned. No token, header or session anywhere in the transcript. |
+| 17 | Firestore documents were unbounded, and a rejected write loses the **whole** scan rather than the excess | 5,000 realistic findings → 2,595,454 bytes against a 1,048,576-byte limit. The ceiling is ~2,000 findings, reachable by a /24 sweep. |
+| 18 | `requirements.txt` mandated a GPU compute stack the scanner never calls | CI log of run 33554719630: torch 526.6 MB + 10 CUDA wheels ≈ **1,715 MB per job**, on three jobs. torch, nltk and scikit-learn are imported nowhere in the repo. |
+| 19 | The external-scanner modules had no test against a real scanner — only against captured output | An nmap output-format change would have passed every gate and silently returned zero findings. |
+| 20 | `firestore.rules` and `exchangeAuth0Token` — the entire tenancy boundary — had **zero** tests | Nothing asserted that a tenant cannot read another's scans, or that `client_id` cannot come from the request. |
+
 ### Security hardening, specifically
 
 - **URL scheme allowlist** (http/https) enforced in `targets.py` *and* re-checked
@@ -131,6 +185,20 @@ Each item was reproduced against the code before being changed.
   no token configured it returns 503 rather than accepting anonymous writes.
 - **Reproducible function dependencies** — lockfile committed, `npm ci` only, and
   `npm audit --audit-level=high` in CI.
+- **The API tenant now comes from the credential.** A bearer token maps to
+  exactly one `client_id`; where the request also names a tenant (query string,
+  or body field on analyze/reports) it is checked against the token and a
+  mismatch is a 403, not a quiet redirect to the caller's own data. Secure by
+  default: unconfigured, the API returns 503 for tenant data while `/health`
+  keeps answering. This is the same property `exchangeAuth0Token` enforces on
+  the Firestore side.
+- **A rejected Firestore write can no longer lose a scan.** The record is packed
+  to an 800 KB budget, most-severe findings first, with per-finding text
+  clamped; severity totals are computed before truncation so they stay true, and
+  `summary.truncated` declares the difference.
+- **~1.7 GB of unused GPU stack removed from the scan runner's dependency set.**
+  On a security product whose runner handles client data, every installed
+  package is supply-chain surface.
 
 > One note on the auth guard, because it is easy to get wrong: `TargetError`
 > subclasses `ValueError`, so the first cut of the local-address check wrapped
@@ -144,14 +212,15 @@ Each item was reproduced against the code before being changed.
 
 These are **not** covered by any gate in this repo, and no claim is made about them.
 
-| Area | Why it is unproven |
-|---|---|
-| Real Auth0 sign-in | No SPA application exists in the tenant. Browser tests open the signed-in view directly. |
-| Real cross-tenant isolation against live Firestore | Needs two seeded tenants and a deployed project. `firestore.rules` is reviewed, not exercised. |
-| A real deploy | Blocked on `FIREBASE_SERVICE_ACCOUNT` (§5). No deploy has been attempted from this branch. |
-| The authenticated ingest path end to end | `verifyIngest()` is unit-tested in isolation. The full POST → 401/503/200 round trip needs a deployed function, or the Firebase emulator, which is not installed here. |
-| External scanner modules (`port_scan`, `service_fingerprint`, `cve_lookup`, `subdomain_enum`, `web_vuln_scan`) against live hosts | Their **parsers** are unit-tested against captured output. The tools themselves (nmap, subfinder, nuclei) are not installed locally, so these modules degrade to "capability unavailable" and return no findings. That degradation path is exercised; the live-scan path is not. |
-| Consensus engine integration | `_consensus-store.yml` calls `IronCityIT/consensus-engine@main`. Not run from this branch. |
+| Area | Why it is unproven | What would prove it |
+|---|---|---|
+| **Firestore rules, behaviourally** | `tests/functions/rules.test.mjs` is written (15 cross-tenant cases) but **has never been executed**. The emulator needs Java *and* firebase-tools; Java installed here, firebase-tools did not — three `npm install` attempts ran 15–25 minutes each and were still extracting when killed. Only the skip path is verified, and it reports `SKIPPED (NOT PROVEN)`. | The `rules` CI job added in this branch. It runs on the next CI run. |
+| Real Auth0 sign-in | No SPA application exists in the tenant. Browser tests open the signed-in view directly, and `jwtVerify` against the live JWKS is never exercised. | `AUTH0_CLIENT_ID` + an SPA app (§5). |
+| A real deploy | Blocked on `FIREBASE_SERVICE_ACCOUNT` (§5). No deploy attempted from this branch. | The secrets in §5. |
+| The authenticated ingest path end to end | `verifyIngest()` is unit-tested in isolation (15 cases). The full POST → 401/503/200 round trip needs a deployed function or the emulator. | A deploy, or the emulator once available. |
+| `cve_lookup`, `subdomain_enum`, `web_vuln_scan` against live hosts | Their parsers are unit-tested against captured output, but subfinder and nuclei are not installed, so the modules degrade to "capability unavailable". That degradation path IS exercised; the live path is not. `port_scan` and `service_fingerprint` no longer belong on this list — they now run through real nmap 7.94 in the smoke test. | Installing those two scanners in the smoke environment, as was done for nmap. |
+| Consensus engine integration | `_consensus-store.yml` calls `IronCityIT/consensus-engine@main`. Not run from this branch. | A dispatched workflow run. |
+| A fully isolated fresh `pip install` | `python3 -m venv` produces no pip on this machine (`ensurepip` unavailable). See the fresh-environment note in §2 for what was verified instead. | Any environment with a working `ensurepip`, or CI, which does exactly this on every run. |
 
 ---
 
@@ -168,6 +237,7 @@ repo, per the ICIT secret policy. Each is needed before a deploy can succeed.
 | `FIREBASE_API_KEY` | ❌ missing | Dashboard Firebase web config. |
 | `GITHUB_DISPATCH_TOKEN` | ❌ missing | `triggerScan` cannot dispatch a workflow. |
 | `AUTH0_AUDIENCE` | ❌ missing (optional) | Only if the access token needs an API audience. |
+| `TI_API_TOKENS` | ⚙️ **operator-set, not a repo secret** | The local REST API refuses to serve tenant data without it. Format `'<token>:<client_id>,...'`, set on whatever runs the container. Not a GitHub secret — it belongs to the deployment, not the build. `TI_ALLOW_UNAUTHENTICATED=true` bypasses it for local development ONLY and logs an error on every request. |
 | `STORE_SCAN_RESULTS_URL` | ✅ **set 2026-08-29** | Present. Note: PRODUCTIZE_NOTES.md still lists this as outstanding — that entry is stale, confirmed via `gh secret list`. |
 
 Auth0 additionally needs an Action setting `https://ironcityit.com/client_id` on
@@ -200,9 +270,11 @@ Each is a real issue with a reason for being out of scope on this branch.
 5. **`scan.yml` installs scanners by downloading pinned release zips over the
    network with no checksum verification.** A supply-chain gap in the workflow.
    Wants pinned digests, which needs a decision on where to record them.
-6. **Firestore documents are unbounded.** `diagnostics` is capped at 50 errors,
-   but `findings` is not — a very large scan could still exceed the 1 MiB limit.
-   Needs a chunking design, not a patch.
+6. ~~**Firestore documents are unbounded.**~~ **FIXED** in this pass — the record
+   is now packed to an 800 KB budget, most-severe first, with the full severity
+   totals preserved and truncation declared. What remains open is that the
+   complete finding set for a truncated scan lives only in the build artifact;
+   paging large result sets into subcollections is still a design question.
 7. **12 moderate npm advisories in the function dependency tree**, all
    transitive and none directly imported by this repo:
    - `qs` (DoS / array-limit bypass) via `express` → `body-parser`, pulled in by
@@ -216,6 +288,22 @@ Each is a real issue with a reason for being out of scope on this branch.
    especially with no deployed environment to verify against. The CI gate is set
    at `--audit-level=high`, so these do not block, and they are recorded here
    rather than silenced. **Recommend a dedicated dependency-upgrade PR.**
+8. **`utils/remediation.py` generates security remediation text with gpt2.**
+   Beyond being poor quality for the purpose, CLAUDE.md is explicit that AI
+   analysis belongs to consensus-engine and must not be duplicated in a product.
+   This pass made the dependency optional; the code path arguably should be
+   removed outright. **Product decision for Bill, not one to take unilaterally.**
+9. **The API's tenant store is in-memory.** `_inspectors` is a process-local
+   dict, so uploaded scan data does not survive a restart and does not work
+   behind more than one replica. Fine for the single-container deployment
+   docker-compose describes; a blocker for anything larger.
+10. **`TI_API_TOKENS` is a static shared-secret table.** It correctly binds a
+    token to one tenant, but there is no rotation, expiry or revocation story.
+    A real deployment should move to the same Auth0-issued JWTs the dashboard
+    uses, validating the `client_id` claim exactly as `exchange.js` does.
+11. **The smoke test's scanner checks depend on a free port in nmap's top-1000.**
+    If every candidate is occupied, they skip rather than fail — correct, but it
+    means a busy machine yields less coverage than it appears to.
 
 ---
 
@@ -229,7 +317,19 @@ Each is a real issue with a reason for being out of scope on this branch.
 | `1b7526c` | Corrupt uploads no longer pass for clean, empty ingests |
 | `321465f` | Scan health reaches the client; payload builder extracted and tested |
 | `bcdd04b` | Realistic fixtures + 40-check end-to-end smoke test, wired into CI |
-| *branch tip* | Authenticated ingest; reproducible function deps; docs |
+| `0917ce8` | Authenticated ingest; reproducible function deps; first status doc |
+
+Second validation pass:
+
+| Commit | What it closes |
+|---|---|
+| `b2b20de` | Firestore document-size risk — the record is packed to fit rather than rejected |
+| `52e858e` | Tenancy boundary tests: `exchangeAuth0Token` resolution + `firestore.rules` invariants |
+| `e6142e3` | ~1.7 GB of unused GPU stack removed from the scan runner's dependency set |
+| `964beb6` | External scanners exercised through real nmap; pip-audit and function suites in CI |
+| `e006b4d` | The API tenant now comes from the credential, not the query string |
+| `b6e7c81` | Behavioural cross-tenant rules tests (written; run by CI, not here) |
+| *branch tip* | This document |
 
 ---
 
@@ -243,7 +343,25 @@ said no production merge or deploy.
 - ✅ Quality gates run, results reported in full — no gate is hidden, and §4 says
   plainly what is *not* proven.
 - ✅ White-label maintained: a browser test feeds raw error text containing tool
-  names through the new degradation notice and asserts none reaches the DOM.
-- ✅ Secrets referenced by name only; the one new secret is flagged in §5.
+  names through the degradation notice and asserts none reaches the DOM; the API
+  suite asserts the same for every field the product derives.
+- ✅ Secrets referenced by name only; the new ones are flagged in §5.
+- ✅ Scanner modules were run **only** against `127.0.0.1` listeners the tests
+  own. No third party was scanned at any point.
 - ⏸️ **Not merged, not deployed** — deliberate, per the task.
 - ⏸️ No PR opened yet.
+
+### The one thing to read if you read nothing else
+
+Two findings from this pass would each have been serious in production:
+
+1. **The REST API had no authentication.** It ships in the Dockerfile on
+   `0.0.0.0:8000`, holds client vulnerability data, and served any tenant to
+   anyone who named them. Fixed, with 22 tests.
+2. **A large scan lost every finding.** Over ~2,000 findings the Firestore write
+   was rejected outright, so the client got nothing rather than a truncated
+   report. Fixed, with 9 tests.
+
+And the largest remaining gap is `npm run test:rules`: the cross-tenant rules
+tests exist but have never run. **Until CI executes them, "no cross-tenant
+leakage" is an argument from code review, not a demonstrated property.**

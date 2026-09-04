@@ -113,6 +113,24 @@ Targets accept an IP, a CIDR range, an http(s) URL, a domain, a hostname, or a
 | `--log-level` | `debug` shows per-module tracebacks. Also `ICIT_LOG_LEVEL`. |
 | `--strict` (ingest) | Exit non-zero if any uploaded file failed to parse. |
 
+### Running the local API
+
+The REST API is multi-tenant and **refuses to serve tenant data until it is told
+who may call it**. A token maps to exactly one client:
+
+```bash
+export TI_API_TOKENS='some-long-random-token:acme,another-token:globex'
+python3 -m uvicorn threat_inspector.api.main:app --port 8000
+
+curl -H "Authorization: Bearer some-long-random-token" \
+  http://127.0.0.1:8000/api/v1/vulnerabilities
+```
+
+The tenant comes from the token, never from the request, so a caller cannot read
+another client's data by naming it. For local development only,
+`TI_ALLOW_UNAUTHENTICATED=true` disables the check — it logs an error on every
+request and must never be set on anything reachable.
+
 ### Reading the result
 
 Every run reports its own health, so an empty findings list is never ambiguous:
@@ -132,14 +150,16 @@ Every run reports its own health, so an empty findings list is never ambiguous:
 ## ✅ Verifying a change
 
 ```bash
-python3 -m pytest -q                # unit + integration suite
-python3 tools/smoke_test.py         # end-to-end, real sockets, real fixtures
+python3 -m pytest -q                # unit + integration suite (182)
+sudo apt-get install -y nmap        # or the real-scanner checks below SKIP
+python3 tools/smoke_test.py         # end-to-end, real sockets, real fixtures (44)
 ruff format --check . && ruff check . && mypy module_framework src
+pip-audit -r requirements.txt -r requirements-dev.txt
 
 # JavaScript. Install the function deps first — the function tests import
 # functions/index.js, which needs firebase-functions.
 npm ci && (cd functions && npm ci)
-npm test                            # function auth + dashboard browser tests
+npm test                            # function auth + tenancy + browser (43)
 ```
 
 `tools/smoke_test.py` stands up a local HTTP server and scans it, ingests the
