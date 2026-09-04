@@ -77,7 +77,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm ci || npm install
+      # `npm ci` only — the `|| npm install` fallback silently resolved a fresh
+      # tree whenever the lockfile did not match, which defeats the lockfile.
+      - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: Browser tests
         run: npm run test:ui
@@ -107,7 +109,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      # `npm ci` needs the committed lockfile; it is no longer allowed to fall
+      # back to `npm install`, which resolved a fresh tree on every run and made
+      # the deployed dependency set unreproducible.
       - working-directory: functions
+        run: npm ci
+      - name: Syntax check
+        working-directory: functions
         run: |
-          npm ci || npm install
           for f in index.js trigger.js exchange.js; do node --check "$f"; done
+      - name: Dependency audit
+        working-directory: functions
+        run: npm audit --audit-level=high
+      - name: Function unit tests
+        run: npm run test:functions

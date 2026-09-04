@@ -4,7 +4,9 @@
   "type": "module",
   "description": "Browser tests for the Threat Inspector dashboard.",
   "scripts": {
-    "test:ui": "node tests/ui/dashboard.spec.mjs"
+    "test:ui": "node tests/ui/dashboard.spec.mjs",
+    "test:functions": "node tests/functions/auth.test.mjs",
+    "test": "npm run test:functions && npm run test:ui"
   },
   "devDependencies": {
     "playwright": "^1.49.1"

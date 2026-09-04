@@ -154,6 +154,11 @@ jobs:
       - name: POST to storeScanResults
         env:
           STORE_URL: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+          # The ingest endpoint writes into a client's Firestore partition, so it
+          # authenticates its caller. Passed via --header @file rather than on the
+          # command line: an argv value is visible in `ps` to anything else on the
+          # runner. Referenced by name only; never valued in the repo.
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${STORE_URL:-}" ]; then
@@ -161,12 +166,23 @@ jobs:
             echo "Deploy the function (deploy-functions.yml) and set the secret to its URL."
             exit 1
           fi
+          if [ -z "${INGEST_TOKEN:-}" ]; then
+            echo "::error::INGEST_TOKEN is not set — storeScanResults will reject this call."
+            echo "Provision the secret and redeploy the function. See docs/SDLC_STATUS.md."
+            exit 1
+          fi
+          umask 077
+          printf 'Authorization: Bearer %s\n' "$INGEST_TOKEN" > .ingest-header
+          trap 'rm -f .ingest-header' EXIT
           HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
             -H "Content-Type: application/json" \
+            -H @.ingest-header \
             --data @payload.json)
           echo "storeScanResults responded HTTP $HTTP_CODE"
           cat response.txt || true
           case "$HTTP_CODE" in
-            2*) echo "Results stored" ;;
-            *)  echo "::error::store POST rejected (HTTP $HTTP_CODE)"; exit 1 ;;
+            2*)  echo "Results stored" ;;
+            401) echo "::error::store POST rejected: INGEST_TOKEN does not match the deployed function"; exit 1 ;;
+            503) echo "::error::store POST rejected: the function has no INGEST_TOKEN configured"; exit 1 ;;
+            *)   echo "::error::store POST rejected (HTTP $HTTP_CODE)"; exit 1 ;;
           esac
