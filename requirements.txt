@@ -1,3 +1,24 @@
+# Runtime dependencies for the scan/ingest pipeline and the local API.
+#
+# What is NOT here matters as much as what is. The optional local-AI stack
+# (torch, transformers, nltk, scikit-learn, ollama) lives in requirements-ai.txt
+# because it is:
+#
+#   * unused by the scanner — torch, nltk and scikit-learn are not imported
+#     anywhere in this repo; transformers and ollama are imported lazily inside
+#     try/except in utils/remediation.py and fall back to generic guidance;
+#   * enormous — torch plus its CUDA wheels is ~1.7 GB downloaded on EVERY CI
+#     job that installs this file (three of them), for a product that never
+#     calls it;
+#   * attack surface — this is a security product whose scan runner handles
+#     client data. Every package installed there is supply-chain risk, and an
+#     unused GPU compute stack is risk bought for nothing;
+#   * the wrong place — per CLAUDE.md, AI analysis belongs in consensus-engine.
+#     One source of truth; the product does not duplicate LLM logic.
+#
+# pyproject.toml already classified these as an optional `ai` extra. This file
+# now agrees with it.
+
 # Core dependencies
 pandas>=2.0.0
 openpyxl>=3.1.0
@@ -22,15 +43,6 @@ pydantic-settings>=2.1.0
 jinja2>=3.1.0
 weasyprint>=60.0
 markdown>=3.5.0
-
-# AI/ML for remediation (all free/local)
-transformers>=4.35.0
-torch>=2.1.0
-nltk>=3.8.0
-scikit-learn>=1.3.0
-
-# Optional: Ollama client for local LLM
-ollama>=0.1.0
 
 # Utilities
 httpx>=0.25.0
