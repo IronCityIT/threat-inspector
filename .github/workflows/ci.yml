@@ -33,6 +33,13 @@ jobs:
         run: python -m mypy module_framework src
       - name: Tests
         run: python -m pytest -q
+      # Audits the REQUIREMENTS FILES, not the ambient environment. Auditing the
+      # environment picks up whatever else happens to be installed on the runner
+      # and fails on packages this project does not ship.
+      - name: Dependency audit
+        run: |
+          python -m pip install -q pip-audit
+          python -m pip_audit -r requirements.txt -r requirements-dev.txt             --progress-spinner=off
 
   smoke:
     name: End-to-end smoke test
@@ -43,11 +50,15 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      # nmap is installed so the external-scanner modules are exercised through
+      # the REAL scanner against a listener the test owns on loopback. Without
+      # it those checks SKIP (loudly) rather than silently passing, and the only
+      # thing proving the parsers still match current nmap output is lost.
+      - name: Install nmap
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nmap
       # Drives the real entry points as subprocesses against the committed
       # fixtures and a live HTTP server on loopback. Unit tests prove the pieces;
-      # this proves they are still wired together. No external scanner is
-      # installed here on purpose -- modules degrade to "capability unavailable"
-      # rather than failing, and that path is worth exercising too.
+      # this proves they are still wired together.
       - name: Smoke test
         run: python3 tools/smoke_test.py
 

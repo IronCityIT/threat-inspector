@@ -12,6 +12,10 @@ JSON contract at every hop. Nothing here is mocked or stubbed:
      local by design: the product must never be smoke-tested by scanning a
      third party, and loopback needs --allow-local, which also exercises that
      flag's opt-out path.
+  4b. the external-scanner modules (port_scan, service_fingerprint) run through
+     REAL nmap against that same loopback listener, which is the only thing that
+     proves their parsers still match what the installed scanner emits. Skipped
+     -- loudly, never faked -- when nmap is absent.
   5. bad input is rejected with a readable reason and no traceback
   6. a module that fails does not sink the scan (an intentionally broken target)
   7. the fixture set ingests through all five file modules
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,7 +44,7 @@ CLI = ROOT / "module_framework" / "cli.py"
 INGEST = ROOT / "module_framework" / "ingest.py"
 FIXTURES = ROOT / "examples" / "file-ingest-selftest"
 
-PASS, FAIL = "PASS", "FAIL"
+PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 results: list[tuple[str, str, str]] = []
 VERBOSE = False
 
@@ -49,6 +54,12 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
     marker = " ok " if ok else "FAIL"
     print(f"  {marker}  {name}" + (f"  -- {detail}" if detail and (VERBOSE or not ok) else ""))
     return ok
+
+
+def skip(name: str, why: str) -> None:
+    """Record a check that could not run. Never counted as a pass."""
+    results.append((SKIP, name, why))
+    print(f"  skip  {name}  -- {why}")
 
 
 def run(argv: list[str], expect: int | None = 0) -> tuple[int, str, str]:
@@ -91,6 +102,22 @@ def serve() -> tuple[ThreadingHTTPServer, str]:
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     host, port = srv.server_address[:2]
     return srv, f"http://{host}:{port}"
+
+
+# Ports inside nmap's default top-1000 TCP set, so a scan with the module's own
+# arguments will actually reach the listener.
+TOP_1000_CANDIDATES = (8080, 8888, 9090, 3128, 8081, 8010, 7070, 4444, 9999)
+
+
+def serve_on_top_1000_port() -> tuple[ThreadingHTTPServer | None, int]:
+    for port in TOP_1000_CANDIDATES:
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", port), Target)
+        except OSError:
+            continue  # already in use on this machine
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv, port
+    return None, 0
 
 
 # ---- the checks ----------------------------------------------------------
@@ -184,6 +211,82 @@ def check_active_scan(base: str) -> None:
     check(
         "timings recorded for every module run", len(doc.get("stats", {}).get("timings", [])) == 2
     )
+
+
+def check_real_scanner() -> None:
+    """Drive port_scan/service_fingerprint through REAL nmap, against 127.0.0.1.
+
+    The target is a listener this process owns on the loopback interface — the
+    only host it is ever legitimate to scan from a test. Skipped, never faked,
+    when nmap is not installed; the modules' pure parse functions are covered by
+    unit tests either way, but this is the only thing that proves the parsers
+    still match what the current scanner actually emits.
+    """
+    print("\nactive scanners against a local listener (real nmap)")
+    if shutil.which("nmap") is None:
+        skip("port_scan against a real listener", "nmap is not installed")
+        skip("service_fingerprint against a real listener", "nmap is not installed")
+        return
+
+    # nmap's default is --top-ports 1000, so the listener has to sit on a port
+    # inside that set for the result to be deterministic.
+    srv, port = serve_on_top_1000_port()
+    if srv is None:
+        skip("port_scan against a real listener", "no free port in nmap's top-1000")
+        skip("service_fingerprint against a real listener", "no free port in nmap's top-1000")
+        return
+    print(f"(listener on 127.0.0.1:{port})")
+    try:
+        code, out, _ = run(
+            [
+                sys.executable,
+                str(CLI),
+                "--modules",
+                "port_scan",
+                "--targets",
+                "127.0.0.1",
+                "--allow-local",
+                "--client",
+                "smoke",
+                "--scan-id",
+                "smoke-nmap",
+            ]
+        )
+        doc = as_json(out) if code == 0 else {}
+        ports = {f["evidence"].get("port") for f in doc.get("findings", [])}
+        check("port_scan runs cleanly against a real host", code == 0 and doc.get("status") == "ok")
+        check(
+            "port_scan found the listener we started",
+            port in ports,
+            f"port {port} in {sorted(p for p in ports if p)}",
+        )
+
+        code, out, _ = run(
+            [
+                sys.executable,
+                str(CLI),
+                "--modules",
+                "service_fingerprint",
+                "--targets",
+                "127.0.0.1",
+                "--allow-local",
+                "--client",
+                "smoke",
+                "--scan-id",
+                "smoke-nmap2",
+            ]
+        )
+        doc = as_json(out) if code == 0 else {}
+        svc = {
+            f["evidence"].get("port"): f["evidence"].get("version") for f in doc.get("findings", [])
+        }
+        check("service_fingerprint runs cleanly", code == 0 and doc.get("status") == "ok")
+        check(
+            "service_fingerprint identified the listener", bool(svc.get(port)), str(svc.get(port))
+        )
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def check_bad_input() -> None:
@@ -408,6 +511,7 @@ def main() -> int:
         check_entry_points()
         check_dry_run()
         check_active_scan(base)
+        check_real_scanner()
         check_bad_input()
         check_containment(base)
         ingest_doc = check_ingest()
@@ -419,9 +523,14 @@ def main() -> int:
         srv.server_close()
 
     failed = [r for r in results if r[0] == FAIL]
-    print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
+    skipped = [r for r in results if r[0] == SKIP]
+    passed = len(results) - len(failed) - len(skipped)
+    print(f"\n{passed} passed, {len(failed)} failed, {len(skipped)} skipped")
     for _, name, detail in failed:
         print(f"  FAILED: {name} {detail}")
+    for _, name, why in skipped:
+        # Loud on purpose: a skip is an unproven check, not a passing one.
+        print(f"  SKIPPED (NOT PROVEN): {name} -- {why}")
     return 1 if failed else 0
 
 
