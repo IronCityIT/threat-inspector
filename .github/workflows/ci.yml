@@ -34,6 +34,23 @@ jobs:
       - name: Tests
         run: python -m pytest -q
 
+  smoke:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      # Drives the real entry points as subprocesses against the committed
+      # fixtures and a live HTTP server on loopback. Unit tests prove the pieces;
+      # this proves they are still wired together. No external scanner is
+      # installed here on purpose -- modules degrade to "capability unavailable"
+      # rather than failing, and that path is worth exercising too.
+      - name: Smoke test
+        run: python3 tools/smoke_test.py
+
   catalog:
     name: Dashboard catalog is current
     runs-on: ubuntu-latest
