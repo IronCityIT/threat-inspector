@@ -1,7 +1,7 @@
 # SDLC Status — Threat Inspector
 
 **Branch:** `feat/threat-inspector-hardening`
-**Last verified:** 2026-09-04 (second validation pass)
+**Last verified:** 2026-09-05 (third pass — completion and gap closure)
 **Scope of this branch:** completion and hardening of the local end-to-end
 product. **Nothing here has been merged or deployed.**
 
@@ -36,7 +36,8 @@ npx playwright install --with-deps chromium     # first run only
 npm test                                        # functions (27) + browser (16)
 
 # Firestore rules, behaviourally. Needs Java + firebase-tools; skips loudly
-# without them. See §4 — this has NOT been executed on this branch.
+# without them. The install is slow (730 packages, ~6m) but it does complete —
+# this now runs and passes here, see §2.
 npm install --no-save firebase-tools @firebase/rules-unit-testing firebase
 npm run test:rules
 
@@ -58,14 +59,14 @@ for f in .github/workflows/*.yml; do
 
 | Gate | Command | Result |
 |---|---|---|
-| Format | `ruff format --check .` | ✅ 56 files formatted |
+| Format | `ruff format --check .` | ✅ 60 files formatted |
 | Lint | `ruff check .` | ✅ all checks passed |
 | Types | `mypy module_framework src` | ✅ 42 files, no issues |
-| Unit + integration | `python3 -m pytest -q` | ✅ **182 passed** |
+| Unit + integration | `python3 -m pytest -q` | ✅ **279 passed** |
 | End-to-end smoke | `python3 tools/smoke_test.py` | ✅ **44/44 checks**, 0 skipped |
 | Function auth + tenancy | `npm run test:functions` | ✅ **27 passed** (15 auth + 12 tenancy) |
 | Dashboard browser | `npm run test:ui` | ✅ **16 passed** in Chromium |
-| Firestore rules (behaviour) | `npm run test:rules` | ⚠️ **NOT RUN** — no emulator here, see §4 |
+| Firestore rules (behaviour) | `npm run test:rules` | ✅ **15 passed** against a real Firestore emulator — see below |
 | Workflow YAML | `yaml.safe_load` × 10 | ✅ all parse |
 | JS syntax | `node --check` × 6 | ✅ all parse |
 | Catalog freshness | `build_catalog.py` + `git diff` | ✅ zero diff |
@@ -73,8 +74,42 @@ for f in .github/workflows/*.yml; do
 | Python advisories | `pip-audit -r requirements*.txt` | ✅ **no known vulnerabilities** |
 | Functions advisories | `npm audit --audit-level=high` | ✅ passes — **12 moderate** remain, see §6.7 |
 
-Test count went **41 → 225** (182 pytest + 27 function + 16 browser), plus 44
-end-to-end smoke checks and 15 emulator rules cases that are written but unrun.
+Test count went **41 → 337** (279 pytest + 27 function + 16 browser + 15
+emulator rules), plus 44 end-to-end smoke checks. Every one of those was
+executed on this branch; nothing in the table above is asserted from code
+review alone.
+
+### The rules tests have now actually run
+
+This was the largest outstanding gap in the previous pass — the cross-tenant
+rules tests existed but had never executed, so "no cross-tenant leakage" was an
+argument from code review. `firebase-tools` installed on the fourth attempt
+(730 packages, 6m), and `npm run test:rules` stood up a real Firestore emulator
+(cloud-firestore-emulator v1.22.0 on Java 21), loaded the committed
+`firestore.rules`, seeded two tenants and tried to read across them:
+
+```
+firestore.rules (emulator)
+  ok   a tenant can read its own client document / scan / scan list
+  ok   a tenant CANNOT read another tenant's client document
+  ok   a tenant CANNOT read another tenant's scan
+  ok   a tenant CANNOT list another tenant's scans
+  ok   the isolation holds in both directions
+  ok   an unauthenticated caller can read nothing
+  ok   a signed-in caller with NO client_id claim can read nothing
+  ok   a forged client_id claim only grants that tenant, not others
+  ok   a tenant CANNOT write its own scan / client document
+  ok   a tenant CANNOT write into another tenant
+  ok   an unauthenticated caller CANNOT write
+  ok   collections outside clients/ are denied by default
+
+15 passed, 0 failed
+```
+
+Tenant isolation is now a demonstrated property of the deployed rules, not a
+claim about them. The writes are denied at the rules layer by design — the
+ingest path writes with the Admin SDK through `storeScanResults`, which
+authenticates its caller separately.
 
 ### Fresh-environment validation — DONE
 
@@ -190,6 +225,16 @@ Second validation pass:
 | 19 | The external-scanner modules had no test against a real scanner — only against captured output | An nmap output-format change would have passed every gate and silently returned zero findings. |
 | 20 | `firestore.rules` and `exchangeAuth0Token` — the entire tenancy boundary — had **zero** tests | Nothing asserted that a tenant cannot read another's scans, or that `client_id` cannot come from the request. |
 
+Third pass:
+
+| # | Defect | Evidence it was real |
+|---|---|---|
+| 21 | **`.gitignore` hid a whole source package from every quality gate.** The runtime output directory was ignored as `reports/`, unanchored, and that pattern matches a directory of that name at ANY depth — so it was swallowing `src/threat_inspector/reports/`. ruff honours .gitignore when it walks, so the package had never been linted or formatted, and it held the only file in the repo at 0% coverage. | Anchoring the pattern took `ruff check .` from "All checks passed" to **53 errors**, and `ruff format --check` from 56 files to 60. |
+| 22 | **The client-facing HTML report interpolated six values with no escaping.** `client_name` and `project_name` come from the request body of POST /api/v1/reports/generate; severity, port and compliance mappings come from the scan file a client uploaded. | Every one landed verbatim in the output: `client_name='<script>alert("client")</script>'` reached `<title>`, and `severity='high"><script>alert(1)</script>'` broke out of a class attribute AND rendered as text. |
+| 23 | **An expired certificate could parse as nothing to report.** `_days_until` used strptime's `%Z`, which accepts only "GMT", "UTC" and the local machine's own zone name; every other rendering returned `None`, and `run()` reads `None` as "no expiry finding". | `_days_until("Jun  1 12:00:00 2027 +0000")`, `"... 2027"` and `"... 2027 CEST"` all returned `None`. A cert expired since 2020 in any of those forms produced no finding at all. |
+| 24 | **A scan export carrying a CVSS score could not be reported.** `cvss_score` is declared `float | None`; the network-scan parser assigned the XML table cell — text — straight through. | `generate_html_report(...)` → `ValueError: Unknown format code 'f' for object of type 'str'`. POST /api/v1/reports/generate fails outright for that client. The other two parsers already coerced. |
+| 25 | **`module_framework` was absent from `--cov` entirely.** The product core CLAUDE.md mandates was not measured, so a regression in it could not show up as lost coverage. | `addopts` read `--cov=threat_inspector` only. Measured, the framework is 73–100%; the shortfall was measurement, not tests. |
+
 ### Security hardening, specifically
 
 - **URL scheme allowlist** (http/https) enforced in `targets.py` *and* re-checked
@@ -231,7 +276,6 @@ These are **not** covered by any gate in this repo, and no claim is made about t
 
 | Area | Why it is unproven | What would prove it |
 |---|---|---|
-| **Firestore rules, behaviourally** | `tests/functions/rules.test.mjs` is written (15 cross-tenant cases) but **has never been executed**. The emulator needs Java *and* firebase-tools; Java installed here, firebase-tools did not — three `npm install` attempts ran 15–25 minutes each and were still extracting when killed. Only the skip path is verified, and it reports `SKIPPED (NOT PROVEN)`. | The `rules` CI job added in this branch. It runs on the next CI run. |
 | Real Auth0 sign-in | No SPA application exists in the tenant. Browser tests open the signed-in view directly, and `jwtVerify` against the live JWKS is never exercised. | `AUTH0_CLIENT_ID` + an SPA app (§5). |
 | A real deploy | Blocked on `FIREBASE_SERVICE_ACCOUNT` (§5). No deploy attempted from this branch. | The secrets in §5. |
 | The authenticated ingest path end to end | `verifyIngest()` is unit-tested in isolation (15 cases). The full POST → 401/503/200 round trip needs a deployed function or the emulator. | A deploy, or the emulator once available. |
@@ -274,10 +318,11 @@ Each is a real issue with a reason for being out of scope on this branch.
    client is having assessed. That is a data-handling decision (and arguably a
    contractual one), not a bug to quietly change — it needs a call from Bill on
    whether to keep it, gate it behind a flag, or drop it.
-2. **`tls_cert_check._days_until` parses `notAfter` with `%Z`**, which only
-   accepts `GMT`. Any other timezone abbreviation yields `None` and the expiry
-   finding is silently skipped. Real, narrow, and wants its own change with a
-   fixture per format.
+2. ~~**`tls_cert_check._days_until` parses `notAfter` with `%Z`.**~~ **FIXED**
+   in this pass — a numeric offset is honoured as given, a trailing zone name is
+   dropped and the rest read as UTC (RFC 5280 requires Zulu time, so a zone name
+   is a rendering artefact), and `None` is returned only for a genuinely
+   unparseable timestamp. 17 tests, one per rendering.
 3. **`default_creds_check` probes a fixed list of admin paths over HTTPS for
    `ip`-kind targets**, where certificate validation will usually fail. It is
    almost certainly under-reporting against bare IPs.
@@ -317,7 +362,19 @@ Each is a real issue with a reason for being out of scope on this branch.
     token to one tenant, but there is no rotation, expiry or revocation story.
     A real deployment should move to the same Auth0-issued JWTs the dashboard
     uses, validating the `client_id` claim exactly as `exchange.js` does.
-11. **The smoke test's scanner checks depend on a free port in nmap's top-1000.**
+11. **`src/threat_inspector/models/__init__.py` is 139 statements of SQLAlchemy
+    that nothing imports.** Not a test gap — dead code. It is plausibly the
+    unbuilt half of gap 9 (the API's tenant store is in-memory), so it is
+    flagged rather than deleted: if persistence is coming, this is the schema
+    to build on; if it is not, the models and the `sqlalchemy`/`alembic`
+    dependencies should go. **Product decision for Bill.**
+12. **`src/threat_inspector/cli.py` is a declared console entry point
+    (`threat-inspector = threat_inspector.cli:main`) at 0% coverage.** It ships
+    in the package but nothing in the product path calls it — the Dockerfile
+    runs the API and the workflows run `module_framework`. Worth either
+    covering or dropping from `[project.scripts]`; both need a call on whether
+    the legacy CLI is still a supported surface.
+13. **The smoke test's scanner checks depend on a free port in nmap's top-1000.**
     If every candidate is occupied, they skip rather than fail — correct, but it
     means a busy machine yields less coverage than it appears to.
 
@@ -345,6 +402,15 @@ Second validation pass:
 | `964beb6` | External scanners exercised through real nmap; pip-audit and function suites in CI |
 | `e006b4d` | The API tenant now comes from the credential, not the query string |
 | `b6e7c81` | Behavioural cross-tenant rules tests (written; run by CI, not here) |
+| `5e0c934` | Fresh-environment validation correction |
+
+Third pass:
+
+| Commit | What it closes |
+|---|---|
+| `db55f4c` | Client-facing report escaped at every interpolation site; `.gitignore` no longer hides the package from lint, format and coverage |
+| `b8b8a56` | An expired certificate is reported whatever the notAfter rendering |
+| `cd4b3b8` | A scan export with a CVSS score can be reported; ingestion-path parsers covered; `module_framework` measured |
 | *branch tip* | This document |
 
 ---
@@ -364,12 +430,18 @@ said no production merge or deploy.
 - ✅ Secrets referenced by name only; the new ones are flagged in §5.
 - ✅ Scanner modules were run **only** against `127.0.0.1` listeners the tests
   own. No third party was scanned at any point.
-- ⏸️ **Not merged, not deployed** — deliberate, per the task.
-- ⏸️ No PR opened yet.
+- ✅ **PR opened** against `main` — see the branch's pull request.
+- ⏸️ **Not merged, not deployed.** `threat-inspector` is IN SCOPE and CLAUDE.md
+  permits both once gates are green, and every gate here is green. It stops at
+  the PR anyway for two reasons worth stating: CI has never executed on this
+  branch (the gates above are local evidence, and the `rules` job in particular
+  has only ever run on this machine), and a deploy is blocked outright on the
+  §5 secrets, none of which this environment can provision.
 
 ### The one thing to read if you read nothing else
 
-Two findings from this pass would each have been serious in production:
+Across the three passes, four findings would each have been serious in
+production:
 
 1. **The REST API had no authentication.** It ships in the Dockerfile on
    `0.0.0.0:8000`, holds client vulnerability data, and served any tenant to
@@ -377,7 +449,21 @@ Two findings from this pass would each have been serious in production:
 2. **A large scan lost every finding.** Over ~2,000 findings the Firestore write
    was rejected outright, so the client got nothing rather than a truncated
    report. Fixed, with 9 tests.
+3. **The client-facing report interpolated six values with no escaping**, from
+   the request body and from uploaded scan files alike. Fixed, with 48 tests.
+4. **A scan export carrying a CVSS score could not be reported at all** — the
+   report raised `ValueError` and the client got nothing. Fixed, with 32 tests
+   across the ingestion path.
 
-And the largest remaining gap is `npm run test:rules`: the cross-tenant rules
-tests exist but have never run. **Until CI executes them, "no cross-tenant
-leakage" is an argument from code review, not a demonstrated property.**
+The third and fourth share a cause worth naming: **a `.gitignore` pattern was
+hiding a whole source package from lint, format and coverage.** `reports/` was
+meant for the runtime output directory, but unanchored it matches a directory
+of that name at any depth, and ruff honours .gitignore when it walks. The
+package with the injection bug in it was the one package no gate could see.
+When a gate reports "all checks passed", it is worth knowing what it was
+allowed to look at.
+
+The largest remaining gap is no longer the rules tests — those now run and pass
+against a real emulator. It is that **CI has never executed on this branch at
+all.** Every number in §2 was produced on one machine, by hand. That is
+evidence, and it is not the same thing as a green pipeline.
