@@ -11,6 +11,26 @@ from pathlib import Path
 from .base import BaseParser, ParsedVulnerability, ParseResult
 
 
+def _as_cvss(raw: object) -> float | None:
+    """Coerce a script table's CVSS cell to a float.
+
+    Table cells arrive as text, and this went into `cvss_score` — declared
+    `float | None` — as the raw string. Nothing complained until the report
+    formatted it: `f"{vuln.cvss_score:.1f}"` raises
+
+        ValueError: Unknown format code 'f' for object of type 'str'
+
+    so any export whose script table carried a CVSS score made HTML report
+    generation fail outright for that client.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 class NmapParser(BaseParser):
     """Parser for Nmap scan files."""
 
@@ -110,7 +130,7 @@ class NmapParser(BaseParser):
                             asset_ip=host_ip,
                             asset_port=int(port_id) if port_id.isdigit() else None,
                             cve_id=vuln_data.get("cve", cves[0] if cves else ""),
-                            cvss_score=vuln_data.get("cvss"),
+                            cvss_score=_as_cvss(vuln_data.get("cvss")),
                             scanner_id=script_id,
                             solution=vuln_data.get("solution", ""),
                             raw_data={

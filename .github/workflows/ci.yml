@@ -33,6 +33,34 @@ jobs:
         run: python -m mypy module_framework src
       - name: Tests
         run: python -m pytest -q
+      # Audits the REQUIREMENTS FILES, not the ambient environment. Auditing the
+      # environment picks up whatever else happens to be installed on the runner
+      # and fails on packages this project does not ship.
+      - name: Dependency audit
+        run: |
+          python -m pip install -q pip-audit
+          python -m pip_audit -r requirements.txt -r requirements-dev.txt             --progress-spinner=off
+
+  smoke:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      # nmap is installed so the external-scanner modules are exercised through
+      # the REAL scanner against a listener the test owns on loopback. Without
+      # it those checks SKIP (loudly) rather than silently passing, and the only
+      # thing proving the parsers still match current nmap output is lost.
+      - name: Install nmap
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nmap
+      # Drives the real entry points as subprocesses against the committed
+      # fixtures and a live HTTP server on loopback. Unit tests prove the pieces;
+      # this proves they are still wired together.
+      - name: Smoke test
+        run: python3 tools/smoke_test.py
 
   catalog:
     name: Dashboard catalog is current
@@ -60,10 +88,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm ci || npm install
+      # `npm ci` only — the `|| npm install` fallback silently resolved a fresh
+      # tree whenever the lockfile did not match, which defeats the lockfile.
+      - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: Browser tests
         run: npm run test:ui
+
+  # The ONLY thing that can prove "no cross-tenant leakage" behaviourally.
+  # tests/test_firestore_rules.py asserts the shape of the rules; this loads the
+  # committed rules into a real Firestore emulator, seeds two tenants, and tries
+  # to read across them. First executed on run 33968442543: the emulator starts,
+  # all 15 cases run, none skip.
+  rules:
+    name: Firestore rules (emulator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # JDK 21 or above: firebase-tools refuses to start the emulator on 17 —
+      # "firebase-tools no longer supports Java version before 21". This job
+      # failed on run 33968345912 for exactly that reason while passing locally,
+      # where the ambient JDK is 21.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npm install --no-save firebase-tools @firebase/rules-unit-testing firebase
+      # emulators:exec starts the emulator, exports FIRESTORE_EMULATOR_HOST into
+      # the child, and exits non-zero if the child does. The test SKIPS loudly
+      # rather than passing if that variable is somehow absent.
+      - name: Rules tests
+        run: npx firebase emulators:exec --only firestore --project demo-threat-inspector "node tests/functions/rules.test.mjs"
 
   workflows:
     name: Workflow YAML parses
@@ -90,7 +149,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      # `npm ci` needs the committed lockfile; it is no longer allowed to fall
+      # back to `npm install`, which resolved a fresh tree on every run and made
+      # the deployed dependency set unreproducible.
       - working-directory: functions
+        run: npm ci
+      - name: Syntax check
+        working-directory: functions
         run: |
-          npm ci || npm install
           for f in index.js trigger.js exchange.js; do node --check "$f"; done
+      - name: Dependency audit
+        working-directory: functions
+        run: npm audit --audit-level=high
+      - name: Function unit tests
+        run: npm run test:functions

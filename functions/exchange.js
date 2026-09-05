@@ -43,6 +43,22 @@ function toClientId(value) {
     .replace(/^-+|-+$/g, "");
 }
 
+/**
+ * Resolve the tenant from VERIFIED token claims, and from nothing else.
+ *
+ * This is the whole tenancy boundary in one function. It takes only the payload
+ * of a signature-verified Auth0 token: it has no access to the request, so
+ * there is no path by which a body field, query string or header could name a
+ * tenant. Extracted so that property can be tested directly rather than
+ * inferred by reading the handler.
+ *
+ * Precedence: the namespaced claim an Auth0 Action sets explicitly, then the
+ * Organization name, then the Organization id.
+ */
+function resolveClientId(claims) {
+  return toClientId(claims[CLIENT_CLAIM] || claims.org_name || claims.org_id);
+}
+
 exports.exchangeAuth0Token = onRequest(
   { region: REGION, cors: true },
   async (req, res) => {
@@ -72,7 +88,8 @@ exports.exchangeAuth0Token = onRequest(
       return;
     }
 
-    const clientId = toClientId(claims[CLIENT_CLAIM] || claims.org_name || claims.org_id);
+    // From the verified token only — never from req.body or req.query.
+    const clientId = resolveClientId(claims);
     if (!clientId) {
       // Authenticated but unassigned. Deliberately distinct from 401 so the
       // dashboard can tell the user to contact an administrator.
@@ -97,3 +114,6 @@ exports.exchangeAuth0Token = onRequest(
     }
   }
 );
+
+// Exported for tests (tests/functions/tenancy.test.mjs). Not an HTTP surface.
+exports._internal = { toClientId, resolveClientId, CLIENT_CLAIM, ISSUER };

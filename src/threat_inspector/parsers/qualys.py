@@ -1,14 +1,23 @@
 """
 Parser for Qualys vulnerability scan exports.
 Supports XLSX, XLSM, and CSV formats.
+
+pandas is imported lazily, inside the methods that actually read a spreadsheet.
+It is by far the heaviest dependency in the tree (~21s of import time on a small
+runner), and importing it at module scope made EVERY entry point pay that cost:
+`threat_inspector/__init__` imports core, which imports this package, so even
+`ingest.py --list-modules` -- which never opens a spreadsheet -- blocked on it.
 """
 
-from pathlib import Path
-from typing import Any
+from __future__ import annotations
 
-import pandas as pd
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .base import BaseParser, ParsedVulnerability, ParseResult
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 class QualysParser(BaseParser):
@@ -41,6 +50,8 @@ class QualysParser(BaseParser):
         metadata: dict[str, Any] = {"source_file": str(file_path)}
 
         try:
+            import pandas as pd
+
             # Read file based on extension
             if file_path.suffix.lower() in [".xlsx", ".xlsm"]:
                 df = pd.read_excel(file_path, engine="openpyxl")
@@ -87,6 +98,7 @@ class QualysParser(BaseParser):
 
     def _parse_row(self, row: pd.Series, column_map: dict[str, str]) -> ParsedVulnerability | None:
         """Parse a single row into a ParsedVulnerability."""
+        import pandas as pd
 
         def get_value(field: str, default: str = "") -> str:
             if field in column_map:
@@ -151,6 +163,8 @@ class QualysComplianceParser(BaseParser):
         metadata: dict[str, Any] = {"source_file": str(file_path), "scan_type": "compliance"}
 
         try:
+            import pandas as pd
+
             if file_path.suffix.lower() in [".xlsx", ".xlsm"]:
                 df = pd.read_excel(file_path, engine="openpyxl")
             else:

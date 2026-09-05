@@ -7,6 +7,7 @@ pure parse function plus registry discovery/selection. No external scanners need
 """
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,12 @@ from modules.header_security_check import evaluate_headers  # noqa: E402
 from modules.port_scan import parse_ports  # noqa: E402
 from modules.service_fingerprint import parse_services  # noqa: E402
 from modules.subdomain_enum import parse_subdomains  # noqa: E402
-from modules.tls_cert_check import cert_finding, grade_finding  # noqa: E402
+from modules.tls_cert_check import (  # noqa: E402
+    _days_until,
+    _parse_not_after,
+    cert_finding,
+    grade_finding,
+)
 from modules.web_vuln_scan import parse_findings as parse_web  # noqa: E402
 
 # ---- registry / catalog -------------------------------------------------
@@ -143,3 +149,101 @@ def test_default_creds_eval():
 def test_finding_rejects_bad_severity():
     with pytest.raises(ValueError):
         Finding(module="m", target="t", severity="explosive", title="x")
+
+
+# ---- default_creds_check: status handling -------------------------------
+# This module used to hardcode `200 if headers else None`, because http_head
+# collapses every non-2xx/3xx into None. A 401/403 -- an admin panel that is
+# present and prompting for credentials -- was therefore invisible, and
+# evaluate()'s 404/5xx branch was unreachable from the real caller.
+
+
+@pytest.mark.parametrize("status", [401, 403, 407])
+def test_auth_challenge_is_reported_as_an_exposed_interface(status):
+    findings = evaluate({"/admin": status}, "10.0.0.1")
+    assert len(findings) == 1
+    assert findings[0].evidence["status"] == status
+    assert "credentials" in findings[0].detail
+
+
+@pytest.mark.parametrize("status", [404, 410, 500, 502, 503])
+def test_absent_or_broken_paths_are_not_reported(status):
+    assert evaluate({"/admin": status}, "10.0.0.1") == []
+
+
+def test_no_http_response_is_not_reported():
+    assert evaluate({"/admin": None}, "10.0.0.1") == []
+
+
+@pytest.mark.parametrize("status", [200, 301, 302, 400])
+def test_reachable_interfaces_are_reported_with_their_status(status):
+    findings = evaluate({"/admin": status}, "10.0.0.1")
+    assert len(findings) == 1
+    assert findings[0].evidence == {"path": "/admin", "status": status}
+
+
+def test_every_probed_path_is_evaluated_independently():
+    findings = evaluate({"/admin": 401, "/missing": 404, "/console": 200}, "10.0.0.1")
+    assert {f.evidence["path"] for f in findings} == {"/admin", "/console"}
+
+
+# ---- certificate notAfter parsing ---------------------------------------
+#
+# The expiry check is the reason this module exists, and it was reachable only
+# for the three zone spellings strptime's %Z happens to accept: "GMT", "UTC"
+# and the local machine's own zone name. Everything else returned None, and a
+# None makes run() emit no expiry finding at all — so an expired certificate
+# rendered with, say, a numeric offset was reported as nothing to see.
+#
+# Reproduced before the change:
+#   _days_until("Jun  1 12:00:00 2027 +0000") -> None
+#   _days_until("Jun  1 12:00:00 2027")       -> None
+#   _days_until("Jun  1 12:00:00 2027 CEST")  -> None
+
+REFERENCE = datetime(2027, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "rendering",
+    [
+        "Jun  1 12:00:00 2027 GMT",  # what OpenSSL actually emits
+        "Jun 1 12:00:00 2027 GMT",  # single-spaced
+        "Jun  1 12:00:00 2027 UTC",
+        "Jun  1 12:00:00 2027 +0000",
+        "Jun  1 12:00:00 2027",  # no zone at all
+        "Jun  1 12:00:00 2027 CEST",  # an abbreviation %Z rejects
+        "  Jun  1 12:00:00 2027 GMT  ",  # surrounding whitespace
+    ],
+)
+def test_every_notafter_rendering_resolves_to_the_same_instant(rendering):
+    assert _parse_not_after(rendering) == REFERENCE
+
+
+def test_a_numeric_offset_is_honoured_rather_than_assumed_utc():
+    """-0500 is five hours behind, so the same clock time is a later instant."""
+    assert _parse_not_after("Jun  1 12:00:00 2027 -0500") == REFERENCE + timedelta(hours=5)
+
+
+@pytest.mark.parametrize(
+    "junk", ["", "   ", "nonsense", "Jun 32 12:00:00 2027 GMT", None, 12345, []]
+)
+def test_unparseable_input_is_none_not_an_exception(junk):
+    assert _parse_not_after(junk) is None
+    assert _days_until(junk) is None
+
+
+def test_an_expired_certificate_is_reported_critical_whatever_the_rendering():
+    """The case the None used to swallow: a long-expired cert must be critical."""
+    for rendering in (
+        "Jan 15 08:30:00 2020 GMT",
+        "Jan 15 08:30:00 2020",
+        "Jan 15 08:30:00 2020 CEST",
+    ):
+        days = _days_until(rendering)
+        assert days is not None and days < 0
+        assert cert_finding(days, "acme.com")[0].severity == "critical"
+
+
+def test_days_until_counts_forward_from_now():
+    future = datetime.now(timezone.utc) + timedelta(days=45)
+    assert _days_until(future.strftime("%b %d %H:%M:%S %Y GMT")) in (44, 45)

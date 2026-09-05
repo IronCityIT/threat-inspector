@@ -56,14 +56,35 @@ jobs:
           fi
           echo "✅ Deploy credential present"
 
+      # storeScanResults writes into client Firestore partitions, so it
+      # authenticates its caller and refuses to serve without a token. Deploying
+      # without the secret provisioned would ship an endpoint that 503s every
+      # scan, so it is checked here rather than discovered in the first run.
+      - name: Verify ingest secret is present
+        env:
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: |
+          if [ -z "$INGEST_TOKEN" ]; then
+            echo "::error::INGEST_TOKEN is not set on this repository."
+            echo "storeScanResults refuses anonymous writes, so it would 503 every scan."
+            echo "Create the secret in Secret Manager on ${GCP_PROJECT} (region ${GCP_REGION}),"
+            echo "grant the functions runtime service account roles/secretmanager.secretAccessor,"
+            echo "and store the same value as the INGEST_TOKEN repo secret so the scan"
+            echo "workflows can authenticate. See docs/SDLC_STATUS.md."
+            exit 1
+          fi
+          echo "✅ Ingest secret present"
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      # `npm ci` only — the fallback to `npm install` resolved a fresh dependency
+      # tree at deploy time, so what shipped was not what was tested.
       - name: Install function dependencies
         working-directory: functions
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Syntax-check functions
         working-directory: functions

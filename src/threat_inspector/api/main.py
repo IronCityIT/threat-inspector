@@ -6,12 +6,13 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from threat_inspector import ThreatInspector, __version__
+from threat_inspector.api.auth import current_tenant
 from threat_inspector.config import get_settings
 from threat_inspector.parsers import SUPPORTED_FORMATS
 
@@ -35,7 +36,24 @@ app.add_middleware(
 
 # Multi-tenant in-memory store: one inspector per client_id so no client's
 # uploaded scan data is ever visible on another client's requests.
+#
+# The partitioning was always correct; what was missing was any check that a
+# caller is who they say they are. client_id arrived as a plain query parameter,
+# so naming a tenant was enough to read it. Every tenant-scoped route now takes
+# its client_id from `current_tenant` (see api/auth.py), which derives it from
+# the caller's bearer token — the same "tenant comes from the credential, never
+# from the request" property exchangeAuth0Token enforces on the Firestore side.
 _inspectors: dict[str, ThreatInspector] = {}
+
+
+def _require_own_tenant(requested: str | None, authorized: str) -> None:
+    """Refuse a request whose body names a tenant other than the caller's.
+
+    Returning the caller's own data instead would silently paper over what is,
+    on a multi-tenant security product, an attempt to read someone else's.
+    """
+    if requested and requested.strip() != authorized:
+        raise HTTPException(status_code=403, detail="client_id does not match the presented token")
 
 
 def get_inspector(client_id: str) -> ThreatInspector:
@@ -106,11 +124,11 @@ async def get_supported_formats():
 
 @app.post("/api/v1/scans/upload")
 async def upload_scan(
-    client_id: str = Query(..., description="Client identifier for multi-tenant isolation"),
     file: UploadFile = File(...),
     scanner_type: str | None = Query(
         None, description="Scan format hint (auto-detected if omitted)"
     ),
+    client_id: str = Depends(current_tenant),
 ):
     """
     Upload and parse a vulnerability scan file.
@@ -152,14 +170,20 @@ async def upload_scan(
 
 
 @app.post("/api/v1/analyze")
-async def analyze_vulnerabilities(request: AnalyzeRequest):
+async def analyze_vulnerabilities(
+    request: AnalyzeRequest,
+    client_id: str = Depends(current_tenant),
+):
     """
     Analyze all loaded vulnerabilities.
 
     Performs deduplication, enriches with remediation guidance,
     and maps to compliance frameworks.
     """
-    inspector = get_inspector(request.client_id)
+    # The body carries a client_id too. It is checked against the token's tenant
+    # rather than trusted, so a body field cannot reach another tenant's data.
+    _require_own_tenant(request.client_id, client_id)
+    inspector = get_inspector(client_id)
     if not inspector._vulnerabilities:
         raise HTTPException(
             status_code=400, detail="No vulnerabilities loaded. Upload scan files first."
@@ -179,11 +203,11 @@ async def analyze_vulnerabilities(request: AnalyzeRequest):
 
 @app.get("/api/v1/vulnerabilities")
 async def get_vulnerabilities(
-    client_id: str = Query(..., description="Client identifier for multi-tenant isolation"),
     severity: str | None = Query(None, description="Filter by severity"),
     asset: str | None = Query(None, description="Filter by asset"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum results"),
     offset: int = Query(0, ge=0, description="Results offset"),
+    client_id: str = Depends(current_tenant),
 ):
     """
     Get parsed vulnerabilities with optional filtering.
@@ -209,20 +233,24 @@ async def get_vulnerabilities(
 
 @app.get("/api/v1/summary")
 async def get_summary(
-    client_id: str = Query(..., description="Client identifier for multi-tenant isolation"),
+    client_id: str = Depends(current_tenant),
 ):
     """Get analysis summary statistics."""
     return get_inspector(client_id).get_summary()
 
 
 @app.post("/api/v1/reports/generate")
-async def generate_report(request: ReportRequest):
+async def generate_report(
+    request: ReportRequest,
+    client_id: str = Depends(current_tenant),
+):
     """
     Generate a vulnerability report.
 
     Returns the report file for download.
     """
-    inspector = get_inspector(request.client_id)
+    _require_own_tenant(request.client_id, client_id)
+    inspector = get_inspector(client_id)
     if not inspector._vulnerabilities:
         raise HTTPException(
             status_code=400, detail="No vulnerabilities loaded. Upload scan files first."
@@ -269,7 +297,7 @@ async def generate_report(request: ReportRequest):
 
 @app.delete("/api/v1/clear")
 async def clear_data(
-    client_id: str = Query(..., description="Client identifier for multi-tenant isolation"),
+    client_id: str = Depends(current_tenant),
 ):
     """Clear loaded vulnerability data for a single client."""
     get_inspector(client_id).clear()

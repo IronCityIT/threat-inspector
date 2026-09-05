@@ -1,0 +1,6 @@
+Control,Status,Description,Asset Name,IP,Remediation
+Ensure password expiration is 365 days or less,Failed,Synthetic fixture row. Not a real finding.,db01.selftest.invalid,10.255.255.12,Set the password expiry policy to 365 days or fewer.
+Ensure SSH root login is disabled,Failed,Synthetic fixture row. Not a real finding.,web01.selftest.invalid,10.255.255.10,Set PermitRootLogin to no.
+Ensure auditd service is enabled,Passed,Synthetic fixture row. Not a real finding.,web01.selftest.invalid,10.255.255.10,No action required.
+Ensure firewall default deny policy is set,Warning,Synthetic fixture row. Not a real finding.,app01.selftest.invalid,10.255.255.13,Review the default policy chain.
+Ensure system is patched to a supported release,Failed,Synthetic fixture row. Not a real finding.,10.255.255.4,10.255.255.4,Upgrade to a supported release.
