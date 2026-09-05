@@ -30,3 +30,9 @@ venv/
 /data/
 /logs/
 node_modules/
+
+# Firebase emulator scratch output (npm run test:rules)
+firestore-debug.log
+firebase-debug.log
+ui-debug.log
+.firebase/
