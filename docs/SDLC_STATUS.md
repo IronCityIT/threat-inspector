@@ -107,7 +107,21 @@ firestore.rules (emulator)
 ```
 
 Tenant isolation is now a demonstrated property of the deployed rules, not a
-claim about them. The writes are denied at the rules layer by design — the
+claim about them. **This also runs in CI** — run `33968442543`, job "Firestore
+rules (emulator)": the emulator starts, all 15 cases run, none skip.
+
+### CI has now executed on this branch, and it caught something local runs could not
+
+The first CI run on this branch (`33968345912`) went **red**. Six of seven jobs
+passed; the rules job failed in 37s without ever starting the emulator:
+
+    Error: firebase-tools no longer supports Java version before 21.
+           Please install a JDK at version 21 or above.
+
+`ci.yml` pinned `java-version: '17'`. The suite passes locally because the
+ambient JDK here happens to be 21, so the one gate that had never run in CI was
+the one broken in CI — the exact failure mode this document warned about in the
+previous pass. Fixed in `58ba692`; run `33968442543` is green on all seven jobs. The writes are denied at the rules layer by design — the
 ingest path writes with the Admin SDK through `storeScanResults`, which
 authenticates its caller separately.
 
@@ -431,12 +445,13 @@ said no production merge or deploy.
 - ✅ Scanner modules were run **only** against `127.0.0.1` listeners the tests
   own. No third party was scanned at any point.
 - ✅ **PR opened** against `main` — see the branch's pull request.
+- ✅ **CI green** — run `33968442543`, all seven jobs, including the rules
+  emulator job. The first run was red and is described in §2.
 - ⏸️ **Not merged, not deployed.** `threat-inspector` is IN SCOPE and CLAUDE.md
-  permits both once gates are green, and every gate here is green. It stops at
-  the PR anyway for two reasons worth stating: CI has never executed on this
-  branch (the gates above are local evidence, and the `rules` job in particular
-  has only ever run on this machine), and a deploy is blocked outright on the
-  §5 secrets, none of which this environment can provision.
+  permits both once gates are green, which they now are in CI as well as
+  locally. Merging is left to Bill on this branch because the task that produced
+  it said no production merge or deploy; a deploy is blocked outright regardless
+  on the §5 secrets, none of which this environment can provision.
 
 ### The one thing to read if you read nothing else
 
@@ -463,7 +478,13 @@ package with the injection bug in it was the one package no gate could see.
 When a gate reports "all checks passed", it is worth knowing what it was
 allowed to look at.
 
-The largest remaining gap is no longer the rules tests — those now run and pass
-against a real emulator. It is that **CI has never executed on this branch at
-all.** Every number in §2 was produced on one machine, by hand. That is
-evidence, and it is not the same thing as a green pipeline.
+Both of those gaps are now closed: the rules tests run against a real emulator,
+and CI has executed on this branch and is green across all seven jobs. The
+closing is worth keeping, though, because the first CI run was **red** for a
+reason no local run could surface — the runner pinned JDK 17 and firebase-tools
+requires 21. Local evidence and a green pipeline are not the same thing, and on
+this branch the difference was exactly one job wide.
+
+What remains genuinely unproven is unchanged and listed in §4: real Auth0
+sign-in, a real deploy, the authenticated ingest round trip, and the three
+modules whose external scanners are not installed.

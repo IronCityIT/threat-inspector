@@ -98,9 +98,8 @@ jobs:
   # The ONLY thing that can prove "no cross-tenant leakage" behaviourally.
   # tests/test_firestore_rules.py asserts the shape of the rules; this loads the
   # committed rules into a real Firestore emulator, seeds two tenants, and tries
-  # to read across them. It needs Java (preinstalled on GitHub runners) and
-  # firebase-tools, neither of which was available in the environment this
-  # branch was developed in — see docs/SDLC_STATUS.md §4.
+  # to read across them. First executed on run 33968442543: the emulator starts,
+  # all 15 cases run, none skip.
   rules:
     name: Firestore rules (emulator)
     runs-on: ubuntu-latest
