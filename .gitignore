@@ -19,10 +19,14 @@ htmlcov/
 .venv/
 venv/
 
-# Runtime output
-reports/
-scans/
-results/
-data/
-logs/
+# Runtime output. These are ANCHORED to the repo root on purpose: an unanchored
+# `reports/` matches ANY directory of that name at any depth, which silently
+# swallowed the src/threat_inspector/reports/ source package. Nothing in it was
+# ever linted, formatted or covered, because ruff and coverage both honour
+# .gitignore when walking. Keep the leading slash.
+/reports/
+/scans/
+/results/
+/data/
+/logs/
 node_modules/
