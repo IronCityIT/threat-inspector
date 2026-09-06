@@ -1,7 +1,7 @@
 # SDLC Status — Threat Inspector
 
 **Branch:** `feat/threat-inspector-hardening`
-**Last verified:** 2026-09-05 (third pass — completion and gap closure)
+**Last verified:** 2026-09-06 (fourth pass — detection correctness and ingestion fidelity)
 **Scope of this branch:** completion and hardening of the local end-to-end
 product. **Nothing here has been merged or deployed.**
 
@@ -62,7 +62,7 @@ for f in .github/workflows/*.yml; do
 | Format | `ruff format --check .` | ✅ 60 files formatted |
 | Lint | `ruff check .` | ✅ all checks passed |
 | Types | `mypy module_framework src` | ✅ 42 files, no issues |
-| Unit + integration | `python3 -m pytest -q` | ✅ **279 passed** |
+| Unit + integration | `python3 -m pytest -q` | ✅ **334 passed** |
 | End-to-end smoke | `python3 tools/smoke_test.py` | ✅ **44/44 checks**, 0 skipped |
 | Function auth + tenancy | `npm run test:functions` | ✅ **27 passed** (15 auth + 12 tenancy) |
 | Dashboard browser | `npm run test:ui` | ✅ **16 passed** in Chromium |
@@ -74,7 +74,7 @@ for f in .github/workflows/*.yml; do
 | Python advisories | `pip-audit -r requirements*.txt` | ✅ **no known vulnerabilities** |
 | Functions advisories | `npm audit --audit-level=high` | ✅ passes — **12 moderate** remain, see §6.7 |
 
-Test count went **41 → 337** (279 pytest + 27 function + 16 browser + 15
+Test count went **41 → 392** (334 pytest + 27 function + 16 browser + 15
 emulator rules), plus 44 end-to-end smoke checks. Every one of those was
 executed on this branch; nothing in the table above is asserted from code
 review alone.
@@ -427,6 +427,14 @@ Third pass:
 | `cd4b3b8` | A scan export with a CVSS score can be reported; ingestion-path parsers covered; `module_framework` measured |
 | *branch tip* | This document |
 
+Fourth pass — detection correctness and ingestion fidelity:
+
+| Commit | What it closes |
+|---|---|
+| `eb31792` | An exposed admin panel on a bare IP was invisible to the check: only validated `https://` was ever tried, so a self-signed certificate and a plain-HTTP panel both read as "nothing here" |
+| `a77b4f1` | Six ways a client's scan export was silently reduced — BOM, CSV field cap, risk-as-word misgrade, empty CVSS v3 shadowing v2, dropped CVEs, unread timestamps |
+
+
 ---
 
 ## 8. Definition-of-done check against CLAUDE.md
@@ -455,7 +463,7 @@ said no production merge or deploy.
 
 ### The one thing to read if you read nothing else
 
-Across the three passes, four findings would each have been serious in
+Across the four passes, six findings would each have been serious in
 production:
 
 1. **The REST API had no authentication.** It ships in the Dockerfile on
@@ -469,6 +477,26 @@ production:
 4. **A scan export carrying a CVSS score could not be reported at all** — the
    report raised `ValueError` and the client got nothing. Fixed, with 32 tests
    across the ingestion path.
+5. **The exposed-management-interface check could not see its own subject.**
+   It built exactly one candidate URL — validated `https://{value}` — for every
+   non-URL target. An IP has no name for a certificate to match, so validation
+   failed, `urlopen` raised, and the probe reported "no HTTP response": the
+   same answer a host with nothing on it gives. A plain-HTTP panel was never
+   tried at all. Against real listeners, a management interface answering 401
+   on a bare IP produced **zero findings** over both HTTP and self-signed
+   HTTPS. Appliances on an internal range are the population most likely to
+   still hold default credentials, and they are exactly the hosts that answer
+   that way. Fixed, with 12 tests against real sockets.
+6. **Six ways an uploaded scan export was silently reduced**, four of them
+   with no error and no warning — so the report looked finished and was wrong.
+   The worst: a UTF-8 BOM (what Windows writes) landed inside the first CSV
+   column's name, and when that column is the finding title, **every row was
+   dropped and the export ingested as zero findings**. Also a >128 KB plugin
+   output losing the entire file, a web export whose risk is a word rather
+   than a code grading a SQL injection as *informational*, an empty CVSS v3
+   element shadowing a real v2 score, only the first CVE of a multi-CVE plugin
+   surviving, and report timestamps never parsing. Fixed, with 43 tests; 16 of
+   them fail against the unfixed parsers.
 
 The third and fourth share a cause worth naming: **a `.gitignore` pattern was
 hiding a whole source package from lint, format and coverage.** `reports/` was
@@ -488,3 +516,23 @@ this branch the difference was exactly one job wide.
 What remains genuinely unproven is unchanged and listed in §4: real Auth0
 sign-in, a real deploy, the authenticated ingest round trip, and the three
 modules whose external scanners are not installed.
+
+### What the fourth pass says about the first three
+
+The first three passes hardened the paths around the product: authentication,
+storage, escaping, the report. The fourth went at the scanners and parsers
+themselves and found that **two of them were wrong about the world** — not
+crashing, not erroring, just quietly returning less than the truth.
+
+That is the class of defect a green gate is worst at catching. Every one of
+these six-plus-one findings passed lint, types, the full suite and the smoke
+test both before and after; they were invisible because nothing had ever asked
+the code the question a client asks it. `default_creds_check` had good coverage
+of `evaluate()` — the pure mapping — and none at all of how it reaches a host,
+which is where it was broken. The two export parsers had no direct tests at
+all despite being registered, client-facing ingest modules.
+
+The check that found all of them was the same each time: generate the input a
+client would actually supply, run the real code path against it, and compare
+the answer to what the input contained. Coverage percentage did not predict
+where the bugs were; asking "what would a client hand this?" did.
