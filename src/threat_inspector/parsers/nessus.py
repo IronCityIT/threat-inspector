@@ -3,13 +3,39 @@ Parser for Nessus vulnerability scan exports.
 Supports .nessus (XML) and CSV formats.
 """
 
+import contextlib
 import csv
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .base import BaseParser, ParsedVulnerability, ParseResult
+
+# Nessus writes a whole plugin output into a single CSV cell, and csv's default
+# cap is 128 KB. Past that the reader raises mid-file, the exception reached the
+# blanket handler in _parse_csv, and the WHOLE export was reported as zero
+# findings with one error line. The cap is RAISED, not removed: an unlimited
+# field lets a single hostile cell exhaust memory, while 64 MB is orders of
+# magnitude past any genuine plugin output.
+_CSV_FIELD_LIMIT = 64 * 1024 * 1024
+
+
+@contextlib.contextmanager
+def _raised_csv_field_limit(limit: int = _CSV_FIELD_LIMIT) -> Iterator[None]:
+    """Raise csv's field cap for one read, then put it back.
+
+    csv.field_size_limit is process-global state. Setting it and walking away
+    would mean one ingest silently changes the limit every later ingest in the
+    process runs under, so it is restored even when the read raises.
+    """
+    previous = csv.field_size_limit()
+    try:
+        csv.field_size_limit(limit)
+        yield
+    finally:
+        csv.field_size_limit(previous)
 
 
 class NessusParser(BaseParser):
@@ -116,20 +142,28 @@ class NessusParser(BaseParser):
         port = item.get("port", "0")
         protocol = item.get("protocol", "tcp")
 
-        # Get CVE(s)
-        cve_elem = item.find("cve")
-        cve_id = (cve_elem.text or "") if cve_elem is not None else ""
+        # EVERY CVE, not just the first. A ReportItem carries one <cve> element
+        # per CVE, and find() returns one of them — so a plugin citing several
+        # was reported against a single CVE and the rest vanished. The plugins
+        # that cite several are exactly the ones worth chasing.
+        cve_ids = [e.text.strip() for e in item.findall("cve") if e.text and e.text.strip()]
+        cve_id = ", ".join(cve_ids)
 
-        # Get CVSS
+        # Prefer CVSS v3 and fall back to v2 — but decide on the VALUE, not on
+        # the element's presence. Nessus emits an empty <cvss3_base_score/> for
+        # plugins scored only under v2; keying the fallback off `is None` meant
+        # that empty element shadowed the v2 score and the finding reached the
+        # client carrying no score at all.
         cvss_score = None
-        cvss_elem = item.find("cvss3_base_score")
-        if cvss_elem is None:
-            cvss_elem = item.find("cvss_base_score")
-        if cvss_elem is not None and cvss_elem.text:
+        for score_tag in ("cvss3_base_score", "cvss_base_score"):
+            score_elem = item.find(score_tag)
+            if score_elem is None or not score_elem.text:
+                continue
             try:
-                cvss_score = float(cvss_elem.text)
+                cvss_score = float(score_elem.text)
+                break
             except ValueError:
-                pass
+                continue
 
         return ParsedVulnerability(
             title=plugin_name,
@@ -159,12 +193,32 @@ class NessusParser(BaseParser):
         """Parse Nessus CSV export format."""
         vulnerabilities = []
         metadata: dict[str, Any] = {"source_file": str(file_path), "format": "csv"}
+        columns: list[str] = []
+        rows_read = 0
 
         try:
-            with open(file_path, encoding="utf-8") as f:
+            # encoding="utf-8-sig", NOT "utf-8". A Nessus export saved or
+            # re-saved on Windows carries a UTF-8 BOM, and under plain utf-8
+            # those three bytes land inside the FIRST column's NAME. Every
+            # lookup of that column then misses. When the first column is
+            # "Name" — the title — every row was skipped as untitled and the
+            # export ingested as ZERO findings, with no error and no warning:
+            # the client got a clean report from a scan that found things.
+            # utf-8-sig strips a BOM when there is one and is identical to
+            # utf-8 when there is not.
+            #
+            # newline="" is what csv requires: without it a quoted cell
+            # containing a newline is split across rows, which for Nessus means
+            # any finding whose description wraps.
+            with (
+                open(file_path, encoding="utf-8-sig", newline="") as f,
+                _raised_csv_field_limit(),
+            ):
                 reader = csv.DictReader(f)
+                columns = list(reader.fieldnames or [])
 
                 for row in reader:
+                    rows_read += 1
                     try:
                         vuln = self._parse_csv_row(row)
                         if vuln:
@@ -174,6 +228,20 @@ class NessusParser(BaseParser):
 
         except Exception as e:
             self.add_error(f"Failed to parse Nessus CSV: {e}")
+
+        metadata["columns"] = columns
+        metadata["rows_read"] = rows_read
+
+        # An export whose rows all vanish is the shape every silent column
+        # mismatch takes: the file opened, the rows were read, and each was
+        # dropped for want of a recognised title column. Reporting a confident
+        # zero there is the failure that hurts — say what was seen instead, so
+        # the gap is visible rather than indistinguishable from a clean scan.
+        if rows_read and not vulnerabilities and not self.errors:
+            self.add_warning(
+                f"{rows_read} row(s) read but none carried a recognised title column; "
+                f"columns present: {', '.join(columns) if columns else 'none'}"
+            )
 
         return ParseResult(
             scanner_type=self.SCANNER_TYPE,

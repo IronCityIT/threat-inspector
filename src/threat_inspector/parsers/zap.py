@@ -6,9 +6,28 @@ Supports XML and JSON formats.
 import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from .base import BaseParser, ParsedVulnerability, ParseResult
+
+
+def _parse_generated(value: str) -> datetime | None:
+    """Read the timestamp a web-application report stamps itself with.
+
+    The reports use RFC-2822 (`Mon, 6 Sep 2026 10:00:00`), not ISO-8601, so
+    fromisoformat raised on every one of them and the scan date was silently
+    dropped — every ingested XML report claimed no scan date at all. ISO is
+    still tried first so any report that does use it keeps working.
+    """
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        pass
+    try:
+        return parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class ZAPParser(BaseParser):
@@ -24,6 +43,22 @@ class ZAPParser(BaseParser):
         "2": "medium",
         "3": "high",
     }
+
+    def _to_severity(self, raw: str) -> str:
+        """Map a risk to a severity, whichever form the export wrote it in.
+
+        The XML report and the traditional JSON report give a numeric riskcode,
+        which RISK_CODE_MAP handles. The API view gives the WORD instead —
+        "High", "Medium" — and no riskcode at all. RISK_CODE_MAP knows only the
+        numbers, so every alert from an API-shaped export fell through to its
+        `.get` default: a SQL injection was filed, and reported to the client,
+        as informational. normalize_severity knows the words, so try the codes
+        first and defer to it for anything else.
+        """
+        raw = str(raw or "").strip()
+        if raw in self.RISK_CODE_MAP:
+            return self.RISK_CODE_MAP[raw]
+        return self.normalize_severity(raw)
 
     def parse(self, file_path: Path) -> ParseResult:
         """Parse a ZAP export file."""
@@ -44,10 +79,7 @@ class ZAPParser(BaseParser):
             # Get scan metadata
             generated = root.get("generated")
             if generated:
-                try:
-                    scan_date = datetime.fromisoformat(generated)
-                except ValueError:
-                    pass
+                scan_date = _parse_generated(generated)
 
             metadata["zap_version"] = root.get("version", "unknown")
 
@@ -93,8 +125,7 @@ class ZAPParser(BaseParser):
         if not title:
             return None
 
-        risk_code = get_text("riskcode", "0")
-        severity = self.RISK_CODE_MAP.get(risk_code, "info")
+        severity = self._to_severity(get_text("riskcode") or get_text("risk"))
 
         # Get all instances (URLs where this vuln was found)
         instances = []
@@ -193,8 +224,13 @@ class ZAPParser(BaseParser):
         if not title:
             return None
 
-        risk_code = str(alert.get("riskcode", alert.get("risk", "0")))
-        severity = self.RISK_CODE_MAP.get(risk_code, "info")
+        # An empty riskcode counts as absent, not as risk 0 — otherwise an
+        # export carrying `"riskcode": ""` alongside a real `"risk": "High"`
+        # grades as informational.
+        raw_risk = alert.get("riskcode")
+        if raw_risk is None or str(raw_risk).strip() == "":
+            raw_risk = alert.get("risk", "")
+        severity = self._to_severity(raw_risk)
 
         # Get instances
         instances = alert.get("instances", [])
