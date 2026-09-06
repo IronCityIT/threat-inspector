@@ -78,6 +78,19 @@ def http_head(url: str, timeout: int = 15) -> dict[str, str] | None:
     return probe.headers
 
 
+def _unverified_tls_context() -> ssl.SSLContext:
+    """A TLS context that does not validate the peer certificate.
+
+    Built explicitly rather than via ssl._create_unverified_context() so the two
+    things being switched off are named in the source and neither can be turned
+    off by accident elsewhere.
+    """
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 @dataclass(frozen=True)
 class HttpProbe:
     """What a single HEAD told us: the status, and headers when we got them."""
@@ -86,7 +99,7 @@ class HttpProbe:
     headers: dict[str, str] | None = None
 
 
-def http_probe(url: str, timeout: int = 15) -> HttpProbe | None:
+def http_probe(url: str, timeout: int = 15, verify_tls: bool = True) -> HttpProbe | None:
     """HEAD a URL and report the STATUS, including 4xx and 5xx.
 
     urlopen raises HTTPError (a URLError subclass) for any non-2xx/3xx, so a
@@ -96,12 +109,24 @@ def http_probe(url: str, timeout: int = 15) -> HttpProbe | None:
 
     Returns None only when there was no HTTP response at all (DNS failure,
     refused connection, timeout, TLS error).
+
+    `verify_tls=False` skips certificate validation. It exists for one narrow
+    case — asking whether a management interface EXISTS on a host presenting a
+    self-signed or IP-mismatched certificate, which is the normal state of the
+    appliances that ship default credentials. Verification stays on by default,
+    the caller has to ask for it off, and the answer is a status code only: this
+    helper sends a HEAD and never reads a body or presents a credential, so an
+    unverified probe cannot leak anything to an impostor. Judging the
+    certificate itself is tls_cert_check's job, not this one's.
     """
     if not _is_fetchable(url):
         return None
     req = urllib.request.Request(url, method="HEAD")
+    ctx = None if verify_tls else _unverified_tls_context()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (scheme checked)
+        with urllib.request.urlopen(  # noqa: S310 (scheme checked)
+            req, timeout=timeout, context=ctx
+        ) as resp:
             return HttpProbe(
                 status=int(resp.status), headers={k.lower(): v for k, v in resp.headers.items()}
             )

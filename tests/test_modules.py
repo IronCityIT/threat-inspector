@@ -179,7 +179,25 @@ def test_no_http_response_is_not_reported():
 def test_reachable_interfaces_are_reported_with_their_status(status):
     findings = evaluate({"/admin": status}, "10.0.0.1")
     assert len(findings) == 1
-    assert findings[0].evidence == {"path": "/admin", "status": status}
+    # `scheme` and `tls_verified` joined the evidence when the module learned to
+    # fall back from validated HTTPS to unvalidated HTTPS to HTTP: a reader has
+    # to be able to tell which of those actually answered.
+    assert findings[0].evidence == {
+        "path": "/admin",
+        "status": status,
+        "scheme": "https",
+        "tls_verified": True,
+    }
+
+
+def test_evidence_carries_the_scheme_that_answered():
+    findings = evaluate({"/admin": 401}, "10.0.0.1", scheme="http", tls_verified=True)
+    assert findings[0].evidence["scheme"] == "http"
+
+
+def test_evidence_flags_a_probe_that_did_not_validate_the_certificate():
+    findings = evaluate({"/admin": 401}, "10.0.0.1", scheme="https", tls_verified=False)
+    assert findings[0].evidence["tls_verified"] is False
 
 
 def test_every_probed_path_is_evaluated_independently():
