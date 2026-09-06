@@ -139,14 +139,24 @@ jobs:
       - name: POST failure record to storeScanResults
         env:
           STORE_URL: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+          # Same authenticated ingest as the success path — see _consensus-store.yml.
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${STORE_URL:-}" ]; then
             echo "::warning::STORE_SCAN_RESULTS_URL not set — cannot report failure to the dashboard"
             exit 0
           fi
+          if [ -z "${INGEST_TOKEN:-}" ]; then
+            echo "::warning::INGEST_TOKEN not set — cannot report failure to the dashboard"
+            exit 0
+          fi
+          umask 077
+          printf 'Authorization: Bearer %s\n' "$INGEST_TOKEN" > .ingest-header
+          trap 'rm -f .ingest-header' EXIT
           HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
             -H "Content-Type: application/json" \
+            -H @.ingest-header \
             --data @payload.json)
           echo "storeScanResults responded HTTP $HTTP_CODE"
           cat response.txt || true

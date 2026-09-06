@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic network discovery export. Not a real scan of anything.
+     Hosts are in the 10.255.255.0/24 reserved fixture range. -->
+<nmaprun scanner="discovery" args="synthetic fixture" start="1756000000" version="7.94">
+  <host>
+    <status state="up"/>
+    <address addr="10.255.255.10" addrtype="ipv4"/>
+    <hostnames><hostname name="web01.selftest.invalid" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="443">
+        <state state="open"/>
+        <service name="https" product="Synthetic HTTP Server" version="1.0"/>
+        <script id="ssl-cert" output="Synthetic fixture output. Certificate expires soon."/>
+        <script id="vulners" output="CVE-2021-41773  7.5  synthetic reference"/>
+      </port>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="Synthetic SSH" version="8.2"/>
+        <script id="ssh-weak-algorithms" output="Synthetic fixture output. Weak KEX offered."/>
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="up"/>
+    <address addr="10.255.255.13" addrtype="ipv4"/>
+    <hostnames><hostname name="app01.selftest.invalid" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="8443">
+        <state state="open"/>
+        <service name="https-alt" product="Synthetic App Server" version="2.1"/>
+        <script id="vuln" output="CVE-2022-22965 synthetic fixture output. Not a real vulnerability."/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

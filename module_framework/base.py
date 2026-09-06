@@ -61,6 +61,26 @@ class ScanModule(ABC):
         raise NotImplementedError
 
 
+@dataclass
+class IngestReport:
+    """What one file yielded: its findings, and anything that went wrong reading it.
+
+    A file that fails to parse produces zero findings — which is byte-identical
+    to a clean file that genuinely contains none. The underlying parsers already
+    record exactly what broke (`ParseResult.errors`), so carrying it up here is
+    what stops a corrupt client upload from being reported as a successful,
+    empty ingest.
+    """
+
+    findings: list[Finding] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
 class FileModule(ABC):
     """Ingests an uploaded scan export and normalizes it into Findings.
 
@@ -85,3 +105,12 @@ class FileModule(ABC):
     def ingest(self, file: Path, ctx: dict[str, Any]) -> list[Finding]:
         """Parse one file into a list of Findings (may be empty)."""
         raise NotImplementedError
+
+    def ingest_report(self, file: Path, ctx: dict[str, Any]) -> IngestReport:
+        """Ingest one file and report parse problems alongside the findings.
+
+        The default wraps ingest() and claims no errors, so a FileModule that
+        only implements ingest() keeps working. Modules backed by a parser that
+        tracks its own errors override this to surface them.
+        """
+        return IngestReport(findings=self.ingest(file, ctx))

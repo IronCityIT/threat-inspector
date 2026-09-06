@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from base import IngestReport
+
 from ._convert import to_findings
 
 if TYPE_CHECKING:
@@ -31,5 +33,20 @@ class ParserFileModule:
     PARSER: type[BaseParser]  # set on each concrete subclass
 
     def ingest(self, file: Path, ctx: dict[str, Any]) -> list[Finding]:
+        return self.ingest_report(file, ctx).findings
+
+    def ingest_report(self, file: Path, ctx: dict[str, Any]) -> IngestReport:
+        """Carry the parser's own errors/warnings up to the runtime.
+
+        Every parser already records why a file failed (`ParseResult.errors` —
+        e.g. "XML parse error: not well-formed ... line 1, column 0"), but
+        to_findings() only ever looked at `vulnerabilities`. A corrupt upload
+        therefore surfaced as a successful ingest with zero findings, which is
+        indistinguishable from a clean scan export.
+        """
         result = self.PARSER().parse(file)
-        return to_findings(self.name, result)
+        return IngestReport(
+            findings=to_findings(self.name, result),
+            errors=list(result.errors),
+            warnings=list(result.warnings),
+        )

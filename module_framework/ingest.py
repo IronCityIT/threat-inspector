@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import sys
+import time
 from pathlib import Path
 
 # Flat framework imports need module_framework/ on the path (script dir, when run
-# as `python3 module_framework/ingest.py`); the parsers need the tool's src/.
+# as `python3 module_framework/ingest.py`, and explicitly for `-m`); the parsers
+# need the tool's src/.
 _HERE = Path(__file__).resolve().parent
 _SRC = _HERE.parent / "src"
 for _p in (str(_HERE), str(_SRC)):
@@ -32,9 +36,11 @@ for _p in (str(_HERE), str(_SRC)):
         sys.path.insert(0, _p)
 
 import registry  # noqa: E402
-from base import FileModule  # noqa: E402
+from base import FileModule, IngestReport  # noqa: E402
 
 from threat_inspector.parsers import get_parser  # noqa: E402
+
+log = logging.getLogger("icit.ingest")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,7 +67,55 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print available file modules and groups, then exit",
     )
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero if any file failed to parse "
+        "(default: report the failures and keep the findings from the rest)",
+    )
+    p.add_argument(
+        "--log-level",
+        default=os.environ.get("ICIT_LOG_LEVEL", "info"),
+        choices=("debug", "info", "warning", "error"),
+        help="stderr log verbosity (default info)",
+    )
     return p
+
+
+def _configure_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper()),
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+
+
+def ingest_file(module: FileModule, path: Path, ctx: dict) -> IngestReport:
+    """Ingest one file through one module. Never raises.
+
+    A malformed upload must not take down the batch: the other files a client
+    sent are still worth something. Parser-level problems arrive in the report;
+    an outright exception is converted into one here.
+    """
+    try:
+        report = module.ingest_report(path, ctx)
+    except Exception as e:  # noqa: BLE001 — containment is the point
+        log.warning("%s failed on %s: %s", module.name, path.name, e)
+        log.debug("traceback for %s/%s", module.name, path, exc_info=True)
+        return IngestReport(errors=[f"{type(e).__name__}: {e}"])
+    for problem in report.errors:
+        log.error("%s could not parse %s: %s", module.name, path.name, problem)
+    for warning in report.warnings:
+        log.warning("%s on %s: %s", module.name, path.name, warning)
+    log.info(
+        "%s ingested %s: %d finding(s)%s",
+        module.name,
+        path.name,
+        len(report.findings),
+        "" if report.ok else " (WITH ERRORS)",
+    )
+    return report
 
 
 def collect_files(files: list[str], dirs: list[str], known_exts: set[str]) -> list[Path]:
@@ -115,6 +169,7 @@ def resolve_module(path: Path, mods: list[FileModule]) -> FileModule | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _configure_logging(args.log_level)
     reg = registry.discover_files("file_modules")
 
     if args.list_modules:
@@ -135,25 +190,70 @@ def main(argv: list[str] | None = None) -> int:
         )
     except KeyError as e:
         print(f"selection error: {e}", file=sys.stderr)
+        print(f"available modules: {', '.join(sorted(reg))}", file=sys.stderr)
         return 2
 
     known_exts = {e for m in mods for e in m.extensions}
     paths = collect_files(args.files, args.files_dir, known_exts)
     if not paths:
-        print("no input files", file=sys.stderr)
+        print(
+            "no input files — pass --files and/or --files-dir "
+            f"(recognised extensions: {', '.join(sorted(known_exts))})",
+            file=sys.stderr,
+        )
         return 2
 
     ctx = {"client": args.client, "scan_id": args.scan_id}
     findings: list[dict] = []
     ingested: list[str] = []
     skipped: list[str] = []
+    failed: list[dict] = []
+    warnings: list[dict] = []
+    started = time.monotonic()
+
+    log.info(
+        "ingest start: client=%s scan_id=%s files=%d modules=%s",
+        args.client or "(unset)",
+        args.scan_id or "(unset)",
+        len(paths),
+        ",".join(m.name for m in mods),
+    )
+
     for path in paths:
         module = resolve_module(path, mods)
         if module is None:
+            log.debug("no selected module accepts %s", path.name)
             skipped.append(str(path))
             continue
-        findings.extend(f.to_dict() for f in module.ingest(path, ctx))
-        ingested.append(str(path))
+        report = ingest_file(module, path, ctx)
+        findings.extend(f.to_dict() for f in report.findings)
+        if report.warnings:
+            warnings.append({"file": str(path), "module": module.name, "warnings": report.warnings})
+        # A file that failed to parse is NOT an ingested file. Reporting it as
+        # one is how a corrupt client upload used to pass for a clean, empty
+        # scan export — same zero findings, no indication anything went wrong.
+        if report.ok:
+            ingested.append(str(path))
+        else:
+            failed.append({"file": str(path), "module": module.name, "errors": report.errors})
+
+    if failed and not ingested:
+        status = "failed"
+    elif failed:
+        status = "partial"
+    else:
+        status = "ok"
+
+    duration = time.monotonic() - started
+    log.info(
+        "ingest %s: %d finding(s) from %d file(s), %d failed, %d skipped, %.1fs",
+        status,
+        len(findings),
+        len(ingested),
+        len(failed),
+        len(skipped),
+        duration,
+    )
 
     print(
         json.dumps(
@@ -164,11 +264,22 @@ def main(argv: list[str] | None = None) -> int:
                 "file_count": len(ingested),
                 "files_ingested": ingested,
                 "files_skipped": skipped,
+                "files_failed": failed,
+                "warnings": warnings,
+                "status": status,
                 "findings": findings,
+                "stats": {
+                    "files_seen": len(paths),
+                    "files_failed": len(failed),
+                    "duration_seconds": round(duration, 2),
+                },
             },
             indent=2,
         )
     )
+    if failed and args.strict:
+        print(f"--strict: {len(failed)} file(s) failed to parse", file=sys.stderr)
+        return 1
     return 0
 
 

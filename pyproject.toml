@@ -85,7 +85,10 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=threat_inspector"
+# module_framework is the product core (CLAUDE.md: every capability is a
+# ScanModule there), and it was absent from --cov entirely, so a regression
+# in it could not show up as lost coverage. Both roots are measured now.
+addopts = "-v --cov=threat_inspector --cov=module_framework"
 
 [tool.mypy]
 python_version = "3.10"

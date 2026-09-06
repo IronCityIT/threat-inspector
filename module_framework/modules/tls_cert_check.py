@@ -72,11 +72,50 @@ def cert_finding(days_left: int | None, host: str) -> list[Finding]:
     ]
 
 
-def _days_until(not_after: str) -> int | None:
-    """Parse an OpenSSL notAfter string into days from now (UTC)."""
+_NOT_AFTER = "%b %d %H:%M:%S %Y"
+
+
+def _parse_not_after(not_after: str) -> datetime | None:
+    """Parse a certificate notAfter string into an aware UTC datetime.
+
+    This used to be a single strptime with %Z, which accepts only "GMT", "UTC"
+    and whatever the local machine's zone happens to be called. Every other
+    rendering — a numeric offset, some other abbreviation, or no zone at all —
+    returned None, and a None makes run() skip the expiry finding entirely. An
+    expired certificate produced no finding whatsoever, which is the one case
+    this module exists to catch.
+
+    RFC 5280 requires certificate validity times to be expressed in Zulu time,
+    so a trailing zone name is a rendering artefact and UTC is the correct
+    reading of any of these forms.
+    """
+    if not isinstance(not_after, str):
+        return None
+    # OpenSSL pads single-digit days to two spaces ("Jun  1"); collapse runs.
+    text = " ".join(not_after.split())
+    if not text:
+        return None
+
+    # A genuine numeric offset ("... 2027 +0000") is honoured as given.
     try:
-        expiry = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
+        return datetime.strptime(text, _NOT_AFTER + " %z").astimezone(timezone.utc)
+    except ValueError:
+        pass
+
+    # Otherwise drop a trailing zone name ("GMT", "CEST", ...) and read as UTC.
+    head, _, tail = text.rpartition(" ")
+    if head and tail.isalpha():
+        text = head
+    try:
+        return datetime.strptime(text, _NOT_AFTER).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _days_until(not_after: str) -> int | None:
+    """Days from now until a certificate notAfter, or None if unparseable."""
+    expiry = _parse_not_after(not_after)
+    if expiry is None:
         return None
     return (expiry - datetime.now(timezone.utc)).days
 

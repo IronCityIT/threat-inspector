@@ -235,6 +235,110 @@ await test("an unknown status cannot inject a class or break the badge", async (
   await page.close();
 });
 
+await test("a scan whose checks all failed is not shown as completed", async () => {
+  // The record's run finished, so status is "completed". The SCAN failed. Showing
+  // green + "0 findings" here would read as a clean bill of health.
+  const page = await openConfigured();
+  await page.evaluate(() =>
+    window.__ti.renderScans(
+      [
+        {
+          target: "example.com",
+          status: "failed",
+          scan_status: "failed",
+          summary: { total: 0 },
+          diagnostics: { module_error_count: 3 },
+        },
+      ],
+      document.getElementById("scans"),
+      document.getElementById("scans-empty")
+    )
+  );
+  assert.equal(await page.locator("#scans .badge-failed").count(), 1, "must render as failed");
+  const notice = await page.locator("#scans .scan-notice").innerText();
+  assert.match(notice, /No results/, "must say no results were produced");
+  assert.match(notice, /3 checks could not complete/);
+  await page.close();
+});
+
+await test("a partially degraded scan is flagged amber, not green", async () => {
+  const page = await openConfigured();
+  await page.evaluate(() =>
+    window.__ti.renderScans(
+      [
+        {
+          target: "example.com",
+          status: "completed",
+          scan_status: "partial",
+          summary: { total: 4, critical: 1, high: 2 },
+          diagnostics: { module_error_count: 1, rejected_targets: ["bad cidr"] },
+        },
+      ],
+      document.getElementById("scans"),
+      document.getElementById("scans-empty")
+    )
+  );
+  assert.equal(await page.locator("#scans .badge-partial").count(), 1, "completed+partial -> partial");
+  assert.equal(await page.locator("#scans .badge-completed").count(), 0);
+  const notice = await page.locator("#scans .scan-notice").innerText();
+  assert.match(notice, /Partial results/);
+  assert.match(notice, /1 check could not complete/, "singular wording");
+  assert.match(notice, /1 target were not valid|1 targets were not valid/);
+  await page.close();
+});
+
+await test("a healthy scan gets no degradation notice", async () => {
+  const page = await openConfigured();
+  await page.evaluate(() =>
+    window.__ti.renderScans(
+      [
+        {
+          target: "example.com",
+          status: "completed",
+          scan_status: "ok",
+          summary: { total: 2 },
+          diagnostics: { module_error_count: 0, module_errors: [], files_failed: [] },
+        },
+      ],
+      document.getElementById("scans"),
+      document.getElementById("scans-empty")
+    )
+  );
+  assert.equal(await page.locator("#scans .badge-completed").count(), 1);
+  assert.equal(await page.locator("#scans .scan-notice").count(), 0, "no notice on a clean scan");
+  await page.close();
+});
+
+await test("the degradation notice never renders raw error text", async () => {
+  // Raw parser/probe errors can name an underlying tool. The notice reads counts
+  // and module ids only, so it cannot leak one to a client-facing surface.
+  const page = await openConfigured();
+  await page.evaluate(() =>
+    window.__ti.renderScans(
+      [
+        {
+          target: "example.com",
+          status: "completed",
+          scan_status: "partial",
+          summary: { total: 0 },
+          diagnostics: {
+            module_error_count: 1,
+            module_errors: [{ module: "port_scan", error: "nmap: command not found" }],
+            files_failed: [{ file: "a.nessus", errors: ["nessus parse error"] }],
+          },
+        },
+      ],
+      document.getElementById("scans"),
+      document.getElementById("scans-empty")
+    )
+  );
+  const body = (await page.locator("#scans").innerText()).toLowerCase();
+  for (const tool of TOOL_NAMES) {
+    assert.ok(!body.includes(tool), `degradation notice leaked ${tool}`);
+  }
+  await page.close();
+});
+
 await test("layout holds at mobile width", async () => {
   const page = await openConfigured();
   await page.setViewportSize({ width: 375, height: 720 });

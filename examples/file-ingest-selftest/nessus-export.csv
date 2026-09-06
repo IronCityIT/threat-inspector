@@ -1,3 +1,9 @@
-Plugin ID,Name,Risk,Host,Protocol,Port,Synopsis,Description,Solution,CVE
-19506,Nessus Scan Information,None,10.255.255.1,tcp,0,Synthetic fixture row.,Synthetic fixture row. Not a real finding.,n/a,
-51192,SSL Certificate Cannot Be Trusted,Medium,10.255.255.1,tcp,443,Synthetic fixture row.,Synthetic fixture row. Not a real finding.,Install a trusted certificate.,
+Plugin ID,Name,Risk,Host,Protocol,Port,Synopsis,Description,Solution,CVE,CVSS v3.0 Base Score
+19506,Scan Information,None,10.255.255.1,tcp,0,Synthetic fixture row.,Synthetic fixture row. Not a real finding.,n/a,,0.0
+51192,SSL Certificate Cannot Be Trusted,Medium,10.255.255.1,tcp,443,Synthetic fixture row.,The server certificate chain could not be validated against a known trust anchor.,Install a certificate signed by a trusted authority.,,6.5
+42873,SSL Medium Strength Cipher Suites Supported,Medium,10.255.255.1,tcp,443,Synthetic fixture row.,The remote service supports cipher suites offering medium strength encryption.,Reconfigure the service to avoid medium strength ciphers.,,5.3
+90317,SSH Weak Algorithms Supported,Low,10.255.255.2,tcp,22,Synthetic fixture row.,The remote SSH service is configured to allow weak key exchange algorithms.,Disable the weak algorithms in sshd_config.,,3.7
+156032,Apache Log4j Remote Code Execution,Critical,10.255.255.3,tcp,8080,Synthetic fixture row.,A synthetic critical row used to prove severity mapping reaches the dashboard.,Upgrade the affected component.,CVE-2021-44228,10.0
+118913,Unsupported Operating System,High,10.255.255.4,tcp,0,Synthetic fixture row.,The remote host runs an operating system that is no longer supported.,Upgrade to a supported release.,,8.1
+10114,ICMP Timestamp Request Remote Date Disclosure,Low,10.255.255.2,icmp,0,Synthetic fixture row.,The remote host answers ICMP timestamp requests.,Filter ICMP timestamp requests at the perimeter.,CVE-1999-0524,2.1
+11219,Open Port Enumeration,None,10.255.255.3,tcp,8080,Synthetic fixture row.,An open port was recorded during discovery.,n/a,,0.0

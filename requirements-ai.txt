@@ -1,0 +1,25 @@
+# OPTIONAL local-AI remediation stack. Not needed to scan, ingest, or report.
+#
+#     pip install -r requirements.txt -r requirements-ai.txt
+#
+# `utils/remediation.py` imports `transformers` and `ollama` lazily, inside
+# try/except, and falls back to generic guidance when they are absent — so
+# leaving this file uninstalled degrades one feature rather than breaking
+# anything. The scan pipeline never touches it.
+#
+# Deliberately NOT installed in CI: torch alone is a 527 MB wheel and drags in
+# ~1.2 GB of CUDA libraries, which is a large supply-chain surface to add to a
+# runner that handles client scan data for a code path the product does not use.
+#
+# Note for review: per CLAUDE.md, AI analysis is the consensus-engine's job and
+# must not be duplicated in a product. The local generation path in
+# utils/remediation.py predates that rule and arguably should be removed
+# outright rather than merely made optional — flagged in docs/SDLC_STATUS.md,
+# not decided here.
+-r requirements.txt
+
+transformers>=4.35.0
+torch>=2.1.0
+nltk>=3.8.0
+scikit-learn>=1.3.0
+ollama>=0.1.0

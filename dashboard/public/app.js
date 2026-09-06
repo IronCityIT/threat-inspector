@@ -99,7 +99,7 @@ export function renderScans(scans, tbody, emptyEl) {
     const sev = scan.summary || {};
     const cells = [
       scan.target || "—",
-      statusBadge(scan.status),
+      statusBadge(scan.status, scan.scan_status),
       String(sev.total ?? 0),
       String(sev.critical ?? 0),
       String(sev.high ?? 0),
@@ -112,13 +112,53 @@ export function renderScans(scans, tbody, emptyEl) {
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
+
+    // A degraded scan gets its own row explaining WHICH capabilities did not
+    // run. "0 findings" on a scan where half the checks failed would otherwise
+    // read as a clean bill of health.
+    const notice = degradedNotice(scan);
+    if (notice) {
+      const row = document.createElement("tr");
+      row.className = "scan-notice";
+      const td = document.createElement("td");
+      td.colSpan = cells.length;
+      td.textContent = notice;
+      row.appendChild(td);
+      tbody.appendChild(row);
+    }
   }
 }
 
-function statusBadge(status) {
+/**
+ * Plain-language explanation for a scan that did not fully run, or null when
+ * there is nothing to say. Reads only counts and Iron City module ids — never
+ * raw error text, which can carry an underlying tool's name.
+ */
+export function degradedNotice(scan) {
+  const diag = scan.diagnostics || {};
+  const failedModules = diag.module_error_count ?? (diag.module_errors || []).length;
+  const failedFiles = (diag.files_failed || []).length;
+  const rejected = (diag.rejected_targets || []).length;
+  if (!failedModules && !failedFiles && !rejected) return null;
+
+  const parts = [];
+  if (failedModules) parts.push(`${failedModules} check${failedModules === 1 ? "" : "s"} could not complete`);
+  if (failedFiles) parts.push(`${failedFiles} uploaded file${failedFiles === 1 ? "" : "s"} could not be read`);
+  if (rejected) parts.push(`${rejected} target${rejected === 1 ? "" : "s"} were not valid`);
+  const lead = scan.scan_status === "failed" ? "No results" : "Partial results";
+  return `${lead}: ${parts.join("; ")}.`;
+}
+
+/**
+ * The badge reflects the SCAN's health, not just whether the run finished.
+ * A run that completed while every capability inside it failed is not a
+ * "completed" scan from the client's point of view.
+ */
+function statusBadge(status, scanStatus) {
   const span = document.createElement("span");
-  const known = ["queued", "running", "completed", "failed"];
-  const value = known.includes(status) ? status : "queued";
+  const known = ["queued", "running", "completed", "failed", "partial"];
+  let value = known.includes(status) ? status : "queued";
+  if (value === "completed" && scanStatus === "partial") value = "partial";
   span.className = `badge badge-${value}`;
   span.textContent = value;
   return span;
