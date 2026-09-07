@@ -39,7 +39,14 @@ from threat_inspector.storage.schema import metadata
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False, which is NOT fileConfig's default.
+    # The default is True, and it disables every logger not named in
+    # alembic.ini — including this application's own. In a process that
+    # migrates and then does something else (the loader checks the schema
+    # revision before writing), that silently swallowed the loader's error
+    # output, so a failed write reported its exit code and nothing else.
+    # A migration has no business switching off the application's logging.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = metadata
 

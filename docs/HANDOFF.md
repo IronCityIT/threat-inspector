@@ -908,6 +908,52 @@ Two properties carry the weight, and both are tested:
 `DATABASE_URL`, and its absence is a loud failure rather than a silent fallback
 to some default database — a test asserts both.
 
+### The loader — VERIFIED
+
+`python3 -m threat_inspector.storage.loader --payload payload.json` writes the
+payload `tools/build_store_payload.py` already produces into the store. Same
+contract, so repointing the pipeline later is a change of *step*, not of format.
+
+It inherits the store step's hardest-won lesson. `_consensus-store.yml` once
+read `if [ -z "$STORE_URL" ]; then echo "::warning::…"; exit 0; fi`, and that
+URL had never been set — so **every scan the product had ever run discarded its
+findings at the last step and reported success**. Nothing in the loader exits 0
+unless a row was written, and each refusal has its own exit code so a workflow
+can react without parsing a message:
+
+| Exit | Meaning |
+|---|---|
+| `0` | Stored. A JSON result goes to stdout for the workflow to read |
+| `1` | No `DATABASE_URL`, or an unreadable/invalid payload |
+| `2` | Database unmigrated, or **behind** the code |
+| `3` | The write failed |
+
+Exit 2 is deliberate: creating the tables on the fly would work, and would also
+mean nobody ever noticed the migration had not been applied. A schema behind the
+code accepts *most* of a payload and silently drops whatever the newest revision
+added — the same quiet data loss this product keeps finding in its own scanners.
+
+The whole load is one transaction, so a scan is stored with all its findings or
+not at all. Re-loading the same payload replaces its findings rather than
+appending, so a retried run does not make the estate look twice as bad. A
+database error is logged **by exception type only** — a SQLAlchemy message can
+carry the DSN, and the DSN carries the password.
+
+### A defect the tests caught while being written — VERIFIED
+
+`alembic`'s generated `env.py` calls `fileConfig(config.config_file_name)`, and
+that function's default is `disable_existing_loggers=True`. It disables every
+logger not named in `alembic.ini` — **including this product's own**. In a
+process that migrates and then does something else (the loader checks the schema
+revision before writing), it silently swallowed the loader's error output: a
+failed write returned its exit code and logged nothing at all.
+
+Found by the test asserting a failed write does not leak the connection string,
+which could see the exit code but not the message it was supposed to inspect.
+Fixed by passing `disable_existing_loggers=False`, with a regression test that
+fails against the default. A migration has no business switching off the
+application's logging.
+
 ### Still outstanding on this path
 
 - **Nothing is wired.** `_consensus-store.yml` still POSTs to `storeScanResults`.
