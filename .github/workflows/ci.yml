@@ -31,7 +31,9 @@ jobs:
       # fast here instead, so a dependency dropping out of requirements.txt
       # cannot quietly turn 49 tests into one green "skipped".
       - name: Storage dependencies are present
-        run: python -c "import sqlalchemy; print('sqlalchemy', sqlalchemy.__version__)"
+        run: |
+          python -c "import sqlalchemy; print('sqlalchemy', sqlalchemy.__version__)"
+          python -c "import alembic; print('alembic', alembic.__version__)"
       - name: Format
         run: python -m ruff format --check .
       - name: Lint

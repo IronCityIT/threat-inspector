@@ -653,7 +653,7 @@ Ordered by value. Blocked items say what blocks them.
 | 1 | **Resolve the `ARCHITECTURE.md` conflict** (§3.4) — fleet-wide, blocks everyone | BLOCKED: HANDS OFF repo, needs Bill |
 | 2 | **Capture the NAS ingest contract and MariaDB schema** (§3.3) | BLOCKED: no credential / no source |
 | 3 | **Reconcile integer `clients.id` with the `client_id` slug** (§4.1) | ✅ **DONE** — resolved in favour of the slug; `storage/schema.py` |
-| 4 | **Self-hosted persistence layer**: schema + tenant-scoped repository, tested, *not deployed* | ✅ **DONE** — `src/threat_inspector/storage/`, 49 tests. Alembic migrations still outstanding |
+| 4 | **Self-hosted persistence layer**: schema + tenant-scoped repository + migrations, tested, *not deployed* | ✅ **DONE** — `src/threat_inspector/storage/`, 60 tests |
 | 5 | **Re-express the tenant-isolation invariants against the DB layer** (§5.3) | ✅ **DONE** — `tests/test_storage_repository.py` |
 | 6 | **Capability reporting** (§2.4) — a missing scanner no longer reports as a clean scan | ✅ **DONE** — modules declare `requires`; runner skips, records and reports `degraded` |
 | 7 | **Enable branch protection on `main`** (§10.2.1) | BLOCKED: repository setting, needs Bill |
@@ -724,7 +724,24 @@ python3 module_framework/cli.py --modules port_scan --targets 127.0.0.1 --allow-
 `--dry-run` validates targets and selection and stops before any module touches
 the network.
 
-### 14.3 Check the self-hosted API is up — VERIFIED
+### 14.3 Migrate the store — VERIFIED against SQLite only
+
+```bash
+export DATABASE_URL='mysql+pymysql://user:pass@host/db'   # never committed
+alembic upgrade head --sql        # review the SQL before it runs
+alembic upgrade head              # apply
+alembic downgrade base            # roll the schema back
+alembic current                   # what the database is at
+```
+
+`--sql` first is the rule, not a nicety: MariaDB DDL is not transactional, so a
+failed multi-statement migration leaves the schema half-applied.
+
+**No MariaDB has ever been connected to from this repository.** These commands
+are verified against SQLite; the MariaDB DDL is dialect-verified, not
+server-verified.
+
+### 14.4 Check the self-hosted API is up — VERIFIED
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
@@ -735,7 +752,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
 Returns `401 {"error":"Unauthorized"}` as of 2026-09-07T20:23Z. A `000`, `5xx`,
 or anything that is not `401` means investigate.
 
-### 14.4 Interpret a scan's status — VERIFIED
+### 14.5 Interpret a scan's status — VERIFIED
 
 | `status` | Meaning |
 |---|---|
@@ -863,10 +880,36 @@ without:                       452 passed, 1 skipped
 smoke:                         44 passed, 0 failed, 0 skipped
 ```
 
+### Migrations — VERIFIED
+
+`alembic.ini` at the repo root, environment under
+`src/threat_inspector/storage/migrations/`, one revision (`0001_initial`).
+
+Two properties carry the weight, and both are tested:
+
+- **The migration and the models cannot drift.** `metadata.create_all()` builds
+  the tables from `schema.py`; Alembic builds them from a revision file. Those
+  are two descriptions of one thing, and they drift — a column gets added to the
+  model, the tests pass because they run against `create_all`, and the migration
+  a real database would apply never learns about it. The test upgrades a
+  database with Alembic and then asks Alembic to compare the result against the
+  models; any difference at all fails. **Proven to work:** adding a column to
+  `schema.py` without a migration produces
+  `Detected added column 'ti_findings.drift_probe'` and a failing test.
+- **This migration set owns only `ti_` tables.** The target MariaDB instance is
+  *shared* — `ironcity-api`'s schema is on it and this repository has never seen
+  it (§3.3). Autogenerate's default against a shared database is to propose a
+  DROP for every table not in `target_metadata`; without a filter the first
+  generated revision would propose dropping another service's data.
+  `include_object` confines it, and a test proves the filter is load-bearing by
+  showing the drop *is* proposed without it.
+
+`alembic.ini` carries **no** `sqlalchemy.url`. The DSN comes from
+`DATABASE_URL`, and its absence is a loud failure rather than a silent fallback
+to some default database — a test asserts both.
+
 ### Still outstanding on this path
 
-- **Alembic migrations.** `alembic` is a declared dependency; no migration
-  environment exists yet. `metadata.create_all()` is the only bootstrap.
 - **Nothing is wired.** `_consensus-store.yml` still POSTs to `storeScanResults`.
   Repointing it needs the decisions in §3.3 and must keep fail-closed behaviour.
 - **No MariaDB has ever been connected to** from this repository. The DDL is
