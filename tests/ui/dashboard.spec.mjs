@@ -287,6 +287,91 @@ await test("a partially degraded scan is flagged amber, not green", async () => 
   await page.close();
 });
 
+await test("a scan that skipped checks is not shown as completed", async () => {
+  // The point of the capability-reporting work: a check that never RAN must not
+  // read as a check that ran and found nothing. The run completed; the scan did
+  // not fully happen, and the client is told so.
+  const page = await openConfigured();
+  await page.evaluate(() =>
+    window.__ti.renderScans(
+      [
+        {
+          target: "example.com",
+          status: "completed",
+          scan_status: "degraded",
+          summary: { total: 1 },
+          diagnostics: {
+            module_error_count: 0,
+            modules_skipped_count: 2,
+            modules_skipped: [
+              { module: "web_vuln_scan", target: "example.com", missing: ["nuclei"] },
+              { module: "subdomain_enum", target: "example.com", missing: ["subfinder"] },
+            ],
+          },
+        },
+      ],
+      document.getElementById("scans"),
+      document.getElementById("scans-empty")
+    )
+  );
+  assert.equal(await page.locator("#scans .badge-degraded").count(), 1, "completed+degraded -> degraded");
+  assert.equal(await page.locator("#scans .badge-completed").count(), 0, "must not read as completed");
+  const notice = await page.locator("#scans .scan-notice").innerText();
+  assert.match(notice, /2 checks did not run/);
+  await page.close();
+});
+
+await test("a skipped check never names the scanner that was missing", async () => {
+  // modules_skipped carries `missing: ["nuclei"]`. That is an underlying tool's
+  // identity and must not reach a client-facing surface.
+  const page = await openConfigured();
+  await page.evaluate(() =>
+    window.__ti.renderScans(
+      [
+        {
+          target: "example.com",
+          status: "completed",
+          scan_status: "degraded",
+          summary: { total: 0 },
+          diagnostics: {
+            modules_skipped_count: 1,
+            modules_skipped: [{ module: "web_vuln_scan", missing: ["nuclei"] }],
+          },
+        },
+      ],
+      document.getElementById("scans"),
+      document.getElementById("scans-empty")
+    )
+  );
+  const body = (await page.locator("body").innerText()).toLowerCase();
+  for (const tool of ["nuclei", "subfinder", "nmap", "zap", "nessus", "qualys"]) {
+    assert.ok(!body.includes(tool), `underlying tool name reached the DOM: ${tool}`);
+  }
+  await page.close();
+});
+
+await test("one skipped check reads in the singular", async () => {
+  const page = await openConfigured();
+  await page.evaluate(() =>
+    window.__ti.renderScans(
+      [
+        {
+          target: "example.com",
+          status: "completed",
+          scan_status: "degraded",
+          summary: { total: 0 },
+          diagnostics: { modules_skipped_count: 1 },
+        },
+      ],
+      document.getElementById("scans"),
+      document.getElementById("scans-empty")
+    )
+  );
+  const notice = await page.locator("#scans .scan-notice").innerText();
+  assert.match(notice, /1 check did not run/);
+  await page.close();
+});
+
 await test("a healthy scan gets no degradation notice", async () => {
   const page = await openConfigured();
   await page.evaluate(() =>

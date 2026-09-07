@@ -139,10 +139,17 @@ export function degradedNotice(scan) {
   const failedModules = diag.module_error_count ?? (diag.module_errors || []).length;
   const failedFiles = (diag.files_failed || []).length;
   const rejected = (diag.rejected_targets || []).length;
-  if (!failedModules && !failedFiles && !rejected) return null;
+  // A check that never RAN is not the same as one that ran and found nothing,
+  // and it is not the same as one that failed either. Counted separately so the
+  // client is told which happened.
+  const skipped = diag.modules_skipped_count ?? (diag.modules_skipped || []).length;
+  if (!failedModules && !failedFiles && !rejected && !skipped) return null;
 
   const parts = [];
   if (failedModules) parts.push(`${failedModules} check${failedModules === 1 ? "" : "s"} could not complete`);
+  // Counts only, never the entries themselves: a skipped entry names the
+  // missing scanner, and that is an underlying tool's identity.
+  if (skipped) parts.push(`${skipped} check${skipped === 1 ? "" : "s"} did not run`);
   if (failedFiles) parts.push(`${failedFiles} uploaded file${failedFiles === 1 ? "" : "s"} could not be read`);
   if (rejected) parts.push(`${rejected} target${rejected === 1 ? "" : "s"} were not valid`);
   const lead = scan.scan_status === "failed" ? "No results" : "Partial results";
@@ -156,9 +163,14 @@ export function degradedNotice(scan) {
  */
 function statusBadge(status, scanStatus) {
   const span = document.createElement("span");
-  const known = ["queued", "running", "completed", "failed", "partial"];
+  const known = ["queued", "running", "completed", "failed", "partial", "degraded"];
   let value = known.includes(status) ? status : "queued";
+  // The RUN completing says nothing about whether every capability inside it
+  // ran. A scan that skipped checks because their scanner is unavailable is not
+  // "completed" from the client's point of view — showing it as such is exactly
+  // the "we never looked" reported as "we found nothing" problem.
   if (value === "completed" && scanStatus === "partial") value = "partial";
+  if (value === "completed" && scanStatus === "degraded") value = "degraded";
   span.className = `badge badge-${value}`;
   span.textContent = value;
   return span;
