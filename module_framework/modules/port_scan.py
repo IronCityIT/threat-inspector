@@ -43,6 +43,7 @@ class PortScan(ScanModule):
     description = "Discovers reachable network ports and listening services."
     target_kinds = ("ip", "domain", "hostname")
     groups = ("quick", "standard", "deep")
+    requires = ("nmap",)
 
     def run(self, target, ctx: dict[str, Any]) -> list[Finding]:
         raw = run_cmd(

@@ -65,6 +65,7 @@ class CveLookup(ScanModule):
     description = "Correlates exposed service versions with known vulnerabilities."
     target_kinds = ("ip", "domain", "hostname")
     groups = ("standard", "deep")
+    requires = ("nmap",)
 
     def run(self, target, ctx: dict[str, Any]) -> list[Finding]:
         raw = run_cmd(

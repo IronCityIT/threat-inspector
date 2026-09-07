@@ -194,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     ctx = {"client": args.client, "scan_id": args.scan_id}
     findings: list[dict] = []
     errors: list[dict] = []
+    skipped: list[dict] = []
     timings: list[dict] = []
     scan_started = time.monotonic()
 
@@ -216,6 +217,25 @@ def main(argv: list[str] | None = None) -> int:
                 if not m.applies_to(t.kind):
                     log.debug("skip %s on %s (kind %s not supported)", m.name, t.value, t.kind)
                     continue
+
+                # A module whose external scanner is not installed used to run,
+                # get None back from run_cmd, and return an empty list — which
+                # was recorded as a SUCCESSFUL run with zero findings. Nothing
+                # downstream could tell that apart from a clean result, so a
+                # scan could report "no web application vulnerabilities" when
+                # the web scanner had never been installed. Check first, and
+                # say so instead of producing a reassuring blank.
+                missing = m.missing_requirements()
+                if missing:
+                    log.warning(
+                        "skip %s on %s: required scanner(s) not available: %s",
+                        m.name,
+                        t.value,
+                        ", ".join(missing),
+                    )
+                    skipped.append({"module": m.name, "target": t.value, "missing": missing})
+                    continue
+
                 got, err, elapsed = run_module(m, t, ctx, args.module_timeout)
                 findings.extend(f.to_dict() for f in got)
                 timings.append(
@@ -245,24 +265,35 @@ def main(argv: list[str] | None = None) -> int:
     # An empty findings list is ambiguous on its own: it can mean "clean scan" or
     # "every module blew up". Downstream (dashboard, consensus) needs to tell
     # those apart, so the run reports its own health.
+    # "degraded" is its own answer, distinct from both "ok" and "partial":
+    # every capability that RAN ran cleanly, but some never ran at all because
+    # their scanner is not installed. Calling that "ok" is what let an
+    # unassessed estate read as a clean one.
     attempted = len(timings)
     failed = len(errors)
     if args.dry_run:
         status = "dry_run"
     elif attempted and failed == attempted:
         status = "failed"
+    elif not attempted and skipped:
+        # Nothing ran at all, and the reason was missing tooling rather than
+        # crashes. Not "ok", and not "failed" either — nothing was attempted.
+        status = "failed"
     elif failed:
         status = "partial"
+    elif skipped:
+        status = "degraded"
     else:
         status = "ok"
 
     duration = time.monotonic() - scan_started
     log.info(
-        "scan %s: %d finding(s), %d/%d module-runs ok, %.1fs",
+        "scan %s: %d finding(s), %d/%d module-runs ok, %d skipped, %.1fs",
         status,
         len(findings),
         attempted - failed,
         attempted,
+        len(skipped),
         duration,
     )
 
@@ -279,10 +310,12 @@ def main(argv: list[str] | None = None) -> int:
                 "status": status,
                 "findings": findings,
                 "errors": errors,
+                "skipped": skipped,
                 "rejected_targets": report.errors,
                 "stats": {
                     "module_runs": attempted,
                     "module_runs_failed": failed,
+                    "module_runs_skipped": len(skipped),
                     "duration_seconds": round(duration, 2),
                     "timings": timings,
                 },
