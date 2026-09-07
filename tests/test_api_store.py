@@ -251,6 +251,56 @@ def test_findings_for_a_scan_that_does_not_exist_are_a_404(client):
 
 
 # ---------------------------------------------------------------------------
+# White-label: an underlying scanner's name must not cross this boundary
+# ---------------------------------------------------------------------------
+
+
+def test_the_response_never_names_the_scanner_that_was_missing(tmp_path, monkeypatch):
+    """`modules_skipped` entries carry `missing: ["nuclei"]`.
+
+    That is a tool identity, and this response is consumed by the client-facing
+    dashboard. The COUNT is what a client needs — "2 checks did not run" — not
+    which scanner was absent, which is an operational detail about our estate.
+    """
+    dsn = f"sqlite:///{tmp_path / 'store.db'}"
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    monkeypatch.setenv("TI_API_TOKENS", TOKENS)
+    monkeypatch.delenv("TI_ALLOW_UNAUTHENTICATED", raising=False)
+    command.upgrade(alembic_config(dsn), "head")
+
+    for name in [m for m in list(sys.modules) if m.startswith("threat_inspector")]:
+        del sys.modules[name]
+    sys.path.insert(0, str(ROOT / "src"))
+
+    from threat_inspector.storage import ScanRepository
+
+    engine = create_engine(dsn)
+    with Session(engine) as session:
+        payload = scan_payload("acme", "ACME finding")
+        payload["diagnostics"] = {
+            "modules_run": ["tls_cert_check"],
+            "modules_skipped": [{"module": "web_vuln_scan", "missing": ["nuclei"]}],
+            "modules_skipped_count": 1,
+        }
+        ScanRepository(session).store_scan(payload)
+        session.commit()
+    engine.dispose()
+
+    from threat_inspector.api.main import app
+
+    api = TestClient(app)
+    body = api.get(f"/api/v1/store/scans/{SCAN_ID}", headers=ACME).text.lower()
+    for tool in ("nuclei", "subfinder", "nmap"):
+        assert tool not in body, f"an underlying tool name reached the API response: {tool}"
+
+    diagnostics = api.get(f"/api/v1/store/scans/{SCAN_ID}", headers=ACME).json()["diagnostics"]
+    assert diagnostics["modules_skipped_count"] == 1, "the count a client needs is kept"
+    assert diagnostics["modules_skipped"][0]["module"] == "web_vuln_scan", (
+        "the Iron City capability id is kept"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
 

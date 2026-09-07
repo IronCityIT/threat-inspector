@@ -1009,6 +1009,30 @@ credential is still required first, so 503 is not a way to probe the API without
 a token. SQLAlchemy is imported lazily so the API stays importable on a machine
 that has not installed it.
 
+### White-label — one gap closed, one recorded
+
+**Closed.** `diagnostics.modules_skipped` entries carry `missing: ["nuclei"]`,
+and that is an underlying scanner's identity. The store API now strips those
+values on the way out (`_safe_diagnostics`), keeping the count and the Iron City
+capability id — a client needs "2 checks did not run", not which scanner our
+estate was missing. The dashboard's degradation notice counts skips and never
+renders the entries, and a browser test asserts no tool name reaches the DOM.
+
+**Recorded, NOT fixed — needs a decision.** The file-ingest module ids are
+`nessus_ingest`, `zap_ingest` and `qualys_ingest`. Those *are* vendor names, and
+they travel on every finding produced by an ingest (`Finding.module`) and in
+`diagnostics.modules_run`. Today nothing client-facing renders them: the
+dashboard shows `catalog.label` ("Compliance Export Import") and never
+`mod.name`, reads only counts from diagnostics, and does not render
+`finding.module` at all. So there is **no leak today** — but the safety rests on
+every current renderer choosing not to display a field that is right there in
+the payload, and the store API does return it.
+
+Renaming them is a breaking change: the ids appear in `--modules` selections,
+in the committed catalog, and in stored records. **Decision for Bill:** rename
+the module ids to neutral ones with a compatibility alias, or keep them and
+enforce the rule at every render site.
+
 ### Still outstanding on this path
 
 - **The write path is still in-memory.** `POST /api/v1/scans/upload` and

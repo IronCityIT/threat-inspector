@@ -89,11 +89,42 @@ def session_factory():
         yield ScanRepository(session)
 
 
+# Diagnostic keys whose VALUES name an underlying scanner rather than an Iron
+# City capability. `modules_skipped` entries carry `missing: ["nuclei"]`, which
+# is a tool identity and must not cross a client-facing boundary.
+_TOOL_NAMING_KEYS = ("missing",)
+
+
+def _safe_diagnostics(diagnostics: Any) -> Any:
+    """Strip underlying scanner names out of the diagnostics a client is shown.
+
+    The white-label rule covers anything a client can see, and this response is
+    consumed by the client-facing dashboard. The COUNT of skipped capabilities
+    is what a client needs — "2 checks did not run" — not which scanner was
+    absent, which is an operational detail about our estate.
+
+    Everything else is passed through: module ids, error counts, timings and
+    rejected targets are Iron City identifiers and numbers.
+    """
+    if not isinstance(diagnostics, dict):
+        return diagnostics
+
+    cleaned = dict(diagnostics)
+    skipped = cleaned.get("modules_skipped")
+    if isinstance(skipped, list):
+        cleaned["modules_skipped"] = [
+            {k: v for k, v in entry.items() if k not in _TOOL_NAMING_KEYS}
+            if isinstance(entry, dict)
+            else entry
+            for entry in skipped
+        ]
+    return cleaned
+
+
 def _scan_dict(scan: Any) -> dict[str, Any]:
     """One scan, as a client-facing record.
 
-    `diagnostics` carries Iron City module ids only — never an underlying
-    scanner's name — so it is safe on a client surface.
+    Diagnostics are sanitised on the way out — see _safe_diagnostics.
     """
     return {
         "scan_id": scan.scan_id,
@@ -107,7 +138,7 @@ def _scan_dict(scan: Any) -> dict[str, Any]:
         "scan_status": scan.scan_status,
         "consensus_status": scan.consensus_status,
         "summary": scan.summary or {},
-        "diagnostics": scan.diagnostics,
+        "diagnostics": _safe_diagnostics(scan.diagnostics),
         "error": scan.error,
         "created_at": scan.created_at.isoformat() if scan.created_at else None,
     }
