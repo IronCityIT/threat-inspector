@@ -2,6 +2,12 @@
 
 **Branch:** `feat/threat-inspector-hardening`
 **Last verified:** 2026-09-06 (fourth pass — detection correctness and ingestion fidelity)
+> **Superseded in part, 2026-09-07.** The architectural direction changed: Firebase /
+> Firestore / GCP storage is retired in favour of self-hosted NAS-backed MariaDB. The
+> gates, defects and evidence recorded in this document remain accurate; the Firebase
+> deployment blockers in §5 are now largely moot. See **[`HANDOFF.md`](HANDOFF.md)** for
+> current state, target architecture, and the classification of every Firebase reference.
+
 **Scope of this branch:** completion and hardening of the local end-to-end
 product. **Nothing here has been merged or deployed.**
 
