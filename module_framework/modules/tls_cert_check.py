@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote, urlparse
 
 from base import Finding, ScanModule
 
-from ._util import fetch_cert, http_get
+from ._util import http_get, inspect_tls
 
 # Cert-expiry thresholds (days) → severity.
 _EXPIRY_CRITICAL = 0
@@ -25,10 +26,21 @@ def _hostname(target) -> str:
     """Extract a bare hostname from a domain/hostname/url target."""
     val: str = target.value
     if "://" in val:
-        from urllib.parse import urlparse
-
         return urlparse(val).hostname or val
     return val
+
+
+def _port(target) -> int:
+    """The port to inspect — a URL target's own, or the TLS default.
+
+    urlparse().hostname drops the port, so an `https://host:8443` target was
+    silently inspected on 443. That grades a different service from the one the
+    caller named, and on a host where 443 is closed it reported nothing at all.
+    """
+    val: str = target.value
+    if "://" in val:
+        return urlparse(val).port or 443
+    return 443
 
 
 def grade_finding(grade: str | None, host: str) -> list[Finding]:
@@ -46,6 +58,33 @@ def grade_finding(grade: str | None, host: str) -> list[Finding]:
             evidence={"grade": grade},
         )
     ]
+
+
+def grade_findings(body: str, host: str) -> list[Finding]:
+    """Grade EVERY endpoint the grading API reported (pure — unit tested).
+
+    Only `endpoints[0]` used to be read. A name that resolves to several
+    addresses is graded per address, and they routinely differ — one node left
+    on an old configuration is exactly the finding worth having. Whenever the
+    worst-configured endpoint was not the first in the list, its grade was
+    discarded.
+    """
+    try:
+        data = json.loads(body)
+        endpoints = data.get("endpoints") or []
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    if not isinstance(endpoints, list):
+        return []
+
+    findings: list[Finding] = []
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        # An endpoint still being analysed carries no grade yet; the API is
+        # asynchronous, so this is the normal state of a first request.
+        findings.extend(grade_finding(endpoint.get("grade"), host))
+    return findings
 
 
 def cert_finding(days_left: int | None, host: str) -> list[Finding]:
@@ -68,6 +107,95 @@ def cert_finding(days_left: int | None, host: str) -> list[Finding]:
             title=f"Certificate expiry: {days_left} day(s) remaining",
             detail=msg.capitalize() + ".",
             evidence={"days_until_expiry": days_left},
+        )
+    ]
+
+
+# OpenSSL's own verification wording -> (severity, what it means for the client).
+# Matched as substrings, worst first, against the message the handshake gave us.
+_VERIFY_FAILURES = (
+    (
+        "certificate has expired",
+        "critical",
+        "The certificate has expired. Browsers and clients refuse the connection outright.",
+    ),
+    (
+        "certificate is not yet valid",
+        "high",
+        "The certificate is not valid yet, so clients refuse the connection.",
+    ),
+    (
+        "hostname mismatch",
+        "high",
+        "The certificate does not cover this hostname, so clients refuse the connection.",
+    ),
+    (
+        "self-signed certificate",
+        "high",
+        "The certificate is self-signed, so no client trusts it without manual configuration.",
+    ),
+    (
+        "self signed certificate",
+        "high",
+        "The certificate is self-signed, so no client trusts it without manual configuration.",
+    ),
+    (
+        "unable to get local issuer certificate",
+        "high",
+        "The certificate chain is incomplete or issued by an untrusted authority.",
+    ),
+    (
+        "certificate revoked",
+        "critical",
+        "The certificate has been revoked by its issuer.",
+    ),
+)
+
+
+def untrusted_finding(reason: str, host: str) -> list[Finding]:
+    """Turn a failed certificate validation into a finding (pure — unit tested).
+
+    This is the branch that did not exist. Every one of these conditions used
+    to arrive as `fetch_cert() -> None`, which the module read as "no expiry
+    finding" — indistinguishable from a certificate in perfect health.
+    """
+    if not reason:
+        return []
+    lowered = reason.lower()
+    severity, detail = "high", "The certificate could not be validated."
+    for needle, sev, message in _VERIFY_FAILURES:
+        if needle in lowered:
+            severity, detail = sev, message
+            break
+    return [
+        Finding(
+            module="tls_cert_check",
+            target=host,
+            severity=severity,
+            title="Certificate failed validation",
+            detail=f"{detail} Reported as: {reason}.",
+            evidence={"verification_error": reason},
+        )
+    ]
+
+
+def unreachable_finding(host: str, port: int, error: str) -> list[Finding]:
+    """Say that transport security was not assessed, rather than staying silent.
+
+    An empty result reads, in the report, exactly like a healthy endpoint.
+    """
+    return [
+        Finding(
+            module="tls_cert_check",
+            target=host,
+            severity="info",
+            title="Transport security could not be assessed",
+            detail=(
+                f"No TLS service answered on {host}:{port}, so the certificate and "
+                "transport configuration were not evaluated. This is not a finding "
+                "of good configuration."
+            ),
+            evidence={"host": host, "port": port, "error": error, "state": "not_assessed"},
         )
     ]
 
@@ -128,25 +256,29 @@ class TlsCertCheck(ScanModule):
 
     def run(self, target, ctx: dict[str, Any]) -> list[Finding]:
         host = _hostname(target)
+        port = _port(target)
         findings: list[Finding] = []
 
-        # Certificate expiry via the platform TLS stack (no external tool needed).
-        cert = fetch_cert(host)
-        if cert and cert.get("notAfter"):
-            findings.extend(cert_finding(_days_until(cert["notAfter"]), host))
+        # Certificate health via the platform TLS stack (no external tool needed).
+        # The three outcomes are kept apart deliberately: a certificate that
+        # FAILS validation is a finding, not an absence.
+        tls = inspect_tls(host, port=port)
+        if not tls.reachable:
+            findings.extend(unreachable_finding(host, port, tls.error))
+        elif not tls.verified:
+            findings.extend(untrusted_finding(tls.reason, host))
+        elif tls.cert and tls.cert.get("notAfter"):
+            findings.extend(cert_finding(_days_until(tls.cert["notAfter"]), host))
 
         # Best-effort transport grade via the public SSL Labs API.
+        # quote() because the host is interpolated into a query string: a value
+        # carrying '&' or '#' would otherwise rewrite the request's parameters.
         body = http_get(
-            f"https://api.ssllabs.com/api/v3/analyze?host={host}&fromCache=on&all=done",
+            f"https://api.ssllabs.com/api/v3/analyze?host={quote(host, safe='')}"
+            "&fromCache=on&all=done",
             timeout=30,
         )
         if body:
-            try:
-                data = json.loads(body)
-                endpoints = data.get("endpoints") or []
-                if endpoints:
-                    findings.extend(grade_finding(endpoints[0].get("grade"), host))
-            except (json.JSONDecodeError, AttributeError, IndexError):
-                pass
+            findings.extend(grade_findings(body, host))
 
         return findings
