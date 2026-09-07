@@ -643,9 +643,9 @@ Ordered by value. Blocked items say what blocks them.
 |---|---|---|
 | 1 | **Resolve the `ARCHITECTURE.md` conflict** (§3.4) — fleet-wide, blocks everyone | BLOCKED: HANDS OFF repo, needs Bill |
 | 2 | **Capture the NAS ingest contract and MariaDB schema** (§3.3) | BLOCKED: no credential / no source |
-| 3 | **Reconcile integer `clients.id` with the `client_id` slug** (§4.1) | Ready — design decision, no external dependency |
-| 4 | **Self-hosted persistence layer**: schema + tenant-scoped repository + migrations, tested, *not deployed* | Ready — see §16 |
-| 5 | **Re-express the 15 tenant-isolation invariants against the DB layer** (§5.3) | Follows #4 |
+| 3 | **Reconcile integer `clients.id` with the `client_id` slug** (§4.1) | ✅ **DONE** — resolved in favour of the slug; `storage/schema.py` |
+| 4 | **Self-hosted persistence layer**: schema + tenant-scoped repository, tested, *not deployed* | ✅ **DONE** — `src/threat_inspector/storage/`, 49 tests. Alembic migrations still outstanding |
+| 5 | **Re-express the tenant-isolation invariants against the DB layer** (§5.3) | ✅ **DONE** — `tests/test_storage_repository.py` |
 | 6 | **Merge capability reporting** (§2.4) — branch `feat/threat-inspector-capability-reporting` @ `5d37c67` | Ready, needs review against this architecture |
 | 7 | **Enable branch protection on `main`** (§10.2.1) | BLOCKED: repository setting, needs Bill |
 | 8 | Decide `tls_cert_check` third-party disclosure | BLOCKED: product decision |
@@ -781,23 +781,87 @@ Non-negotiable for any migration work:
 
 ---
 
-## 16. Next implementation step — proposed
+## 16. Self-hosted persistence — built, not deployed
 
-Backlog #3 + #4 (§12), because they are the only high-value items with **no
-external blocker**:
+Backlog #3, #4 and #5 are done. **Additive only:** the Firebase path is
+untouched, nothing is wired into the workflows, and nothing is deployed.
 
-- Reconcile tenant identity: the slug `client_id` becomes the stable tenant key.
-- A tenant-scoped persistence layer built on the existing SQLAlchemy models,
-  targeting MariaDB via `DATABASE_URL`, with migrations.
-- Tests, including the §5.3 isolation invariants re-expressed at the DB layer.
-- **Additive only.** Firebase untouched, nothing wired into the workflows,
-  nothing deployed, no destructive change.
+`src/threat_inspector/storage/`
 
-This is safe because it depends on no unknown: it defines *this product's own*
-schema rather than guessing `ironcity-api`'s, and it runs against a local
-file-backed database in CI. Whether Threat Inspector ultimately owns its own
-MariaDB schema or POSTs to the shared `/ingest` is **UNKNOWN and a decision for
-Bill** (§3.3) — but a tenant-scoped repository layer is needed either way.
+| Table | Purpose |
+|---|---|
+| `ti_clients` | Tenants. **Primary key is the `client_id` slug**, not a surrogate integer |
+| `ti_scans` | One scan run per tenant. `UNIQUE(client_id, scan_id)` |
+| `ti_findings` | One finding per **row** |
+
+Decisions worth knowing before extending it:
+
+- **The tenant-identity mismatch (§4.1) is resolved in favour of the slug.** It is
+  what every stored record, workflow and token claim already carries; an integer
+  key would have to be invented and mapped, and a mapping living in one place is
+  a tenancy bug waiting to happen.
+- **Findings are rows.** The Firestore document held them all in one field and
+  was rejected outright over ~2,000 findings, costing the client the whole
+  report. A test stores 2,000 findings and reads them all back.
+- **`ti_findings.client_id` is denormalised, and the database enforces it.** A
+  composite foreign key `(scan_pk, client_id) → ti_scans(id, client_id)` makes it
+  impossible for a finding's tenant to disagree with its scan's tenant. Tenant
+  isolation does not rest on remembering to write the join.
+- **There is no unscoped entry point.** Every `ScanRepository` method takes a
+  `client_id`; an empty one raises `TenantScopeError` rather than running
+  `WHERE client_id = ''`, which is valid SQL that returns nothing and reads as
+  "this tenant has no data".
+- **Status stays monotonic**, exactly as `storeScanResults` made it — a completed
+  scan is never downgraded to `failed`, and the failure is recorded alongside the
+  findings instead of replacing them.
+- **Table names are `ti_`-prefixed** so the new schema can coexist with the
+  legacy `models/__init__.py` tables in one database during migration.
+
+### How MariaDB correctness is checked without a MariaDB — VERIFIED
+
+The suite runs on SQLite, which is forgiving in exactly the ways MariaDB is not.
+So the schema is **also compiled against the MySQL dialect** in the tests, which
+asserts: every `VARCHAR` has an explicit length; every table is `InnoDB` +
+`utf8mb4`; every indexed column fits InnoDB's 3072-byte key limit under utf8mb4;
+the severity `CHECK` and both tenancy constraints are emitted. SQLite foreign
+keys are switched **on** in the fixture — they are off by default, and with them
+off the composite-key test would pass while proving nothing.
+
+This is the check that separates "passes locally" from "works on the target".
+On this repository that distinction has already cost one red CI run.
+
+### A dependency fact worth carrying forward — VERIFIED
+
+`sqlalchemy` is declared in `requirements.txt` and `pyproject.toml` but is **not
+installed on `icit-devbox`** (`import sqlalchemy` → `ModuleNotFoundError`; `pip`
+refuses under PEP 668). That is why `models/__init__.py` could never have been
+imported here, quite apart from nothing importing it.
+
+The storage suite therefore `importorskip`s, so a developer box without the
+dependency still gets a clean run. **A skip in CI would be worthless** — it would
+hide the tenant-isolation tests entirely — so `ci.yml` now asserts
+`import sqlalchemy` before running the suite and fails fast if the dependency
+ever leaves `requirements.txt`.
+
+Locally verified both ways:
+
+```
+with sqlalchemy (matches CI):  501 passed          # 452 + 49
+without:                       452 passed, 1 skipped
+smoke:                         44 passed, 0 failed, 0 skipped
+```
+
+### Still outstanding on this path
+
+- **Alembic migrations.** `alembic` is a declared dependency; no migration
+  environment exists yet. `metadata.create_all()` is the only bootstrap.
+- **Nothing is wired.** `_consensus-store.yml` still POSTs to `storeScanResults`.
+  Repointing it needs the decisions in §3.3 and must keep fail-closed behaviour.
+- **No MariaDB has ever been connected to** from this repository. The DDL is
+  dialect-verified, not server-verified. Until a credential exists (§13.2) that
+  distinction stands.
+- **Backup/restore for this data is unestablished** (§15.3). Per §15.4 that is a
+  gate on writing real data, not an afterthought.
 
 ---
 

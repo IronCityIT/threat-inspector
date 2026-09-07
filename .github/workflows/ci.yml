@@ -25,6 +25,13 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt -r requirements-dev.txt
+      # The storage suite skips itself when sqlalchemy is absent, so that a
+      # developer box without it still gets a clean run. In CI a skip would be
+      # worthless — it would hide the tenant-isolation tests entirely. Fail
+      # fast here instead, so a dependency dropping out of requirements.txt
+      # cannot quietly turn 49 tests into one green "skipped".
+      - name: Storage dependencies are present
+        run: python -c "import sqlalchemy; print('sqlalchemy', sqlalchemy.__version__)"
       - name: Format
         run: python -m ruff format --check .
       - name: Lint
