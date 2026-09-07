@@ -254,6 +254,47 @@ def test_offline_mode_emits_sql_for_review(database, capsys):
     assert "CREATE TABLE ti_findings" in emitted
 
 
+def test_running_a_migration_does_not_disable_application_logging(database):
+    """A migration has no business switching off the application's loggers.
+
+    alembic's generated env.py calls `fileConfig(config.config_file_name)`, and
+    that function's default is `disable_existing_loggers=True` — which disables
+    every logger not named in alembic.ini, including this product's own. In a
+    process that migrates and then does something else (the loader checks the
+    schema revision before it writes), it silently swallowed the loader's error
+    output: a failed write returned its exit code and logged nothing.
+
+    Caught by test_a_write_failure_does_not_leak_the_connection_string, which
+    could see the exit code but not the message it was supposed to inspect.
+    """
+    import logging
+
+    app_logger = logging.getLogger("threat_inspector.storage.loader")
+    command.upgrade(alembic_config(database), "head")
+
+    assert not app_logger.disabled, "the migration disabled the application's logger"
+
+    # And it still emits. A handler is attached AFTER the migration on purpose:
+    # fileConfig replaces root's handlers as well as disabling loggers, so
+    # pytest's own caplog handler does not survive a migration run inside the
+    # test body. The property under test is that the logger still works, not
+    # which handler happens to be listening.
+    emitted: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            emitted.append(record.getMessage())
+
+    handler = Capture()
+    logging.getLogger().addHandler(handler)
+    try:
+        app_logger.error("still audible after a migration")
+    finally:
+        logging.getLogger().removeHandler(handler)
+
+    assert "still audible after a migration" in emitted
+
+
 def test_there_is_exactly_one_head(database):
     """Two heads mean two migration branches and an ambiguous upgrade."""
     from alembic.script import ScriptDirectory
