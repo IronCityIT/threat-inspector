@@ -11,6 +11,68 @@ from threat_inspector.parsers import SUPPORTED_FORMATS, ParsedVulnerability, Par
 from threat_inspector.utils.compliance import get_compliance_mappings
 from threat_inspector.utils.remediation import generate_remediation
 
+# Worst first. Anything unrecognised sorts after every known band rather than
+# ahead of "critical", so an odd severity string cannot promote itself.
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# Fields worth carrying across when one duplicate displaces another. Severity,
+# port and score are handled separately because they are not strings.
+_MERGEABLE_TEXT_FIELDS = (
+    "description",
+    "asset_name",
+    "asset_ip",
+    "asset_url",
+    "cve_id",
+    "cwe_id",
+    "cvss_vector",
+    "scanner_id",
+    "scanner_severity",
+    "solution",
+    "evidence",
+    "request",
+    "response",
+)
+
+
+def _severity_rank(severity: str) -> int:
+    return _SEVERITY_RANK.get((severity or "").lower().strip(), len(_SEVERITY_RANK))
+
+
+def _information_score(vuln: ParsedVulnerability) -> tuple[int, ...]:
+    """How much a record actually carries — used only to break a severity tie."""
+    return (
+        int(vuln.cvss_score is not None),
+        int(bool(vuln.cve_id)),
+        int(bool(vuln.solution)),
+        int(bool(vuln.evidence)),
+        len(vuln.description or ""),
+    )
+
+
+def _preference(vuln: ParsedVulnerability) -> tuple[int, ...]:
+    """Sort key for choosing between duplicates: LOWER wins.
+
+    Severity dominates. Richness only breaks a tie, and is negated so that more
+    information sorts earlier.
+    """
+    return (_severity_rank(vuln.severity), *(-n for n in _information_score(vuln)))
+
+
+def _fill_gaps(winner: ParsedVulnerability, loser: ParsedVulnerability) -> ParsedVulnerability:
+    """Copy into the winner any field it left empty, from the record it displaced.
+
+    Choosing a winner must not cost a CVE, a score or a fix that only the other
+    copy carried. Nothing already set is overwritten.
+    """
+    for field_name in _MERGEABLE_TEXT_FIELDS:
+        if not getattr(winner, field_name) and getattr(loser, field_name):
+            setattr(winner, field_name, getattr(loser, field_name))
+    if winner.cvss_score is None and loser.cvss_score is not None:
+        winner.cvss_score = loser.cvss_score
+    if winner.asset_port is None and loser.asset_port is not None:
+        winner.asset_port = loser.asset_port
+    return winner
+
 
 class ThreatInspector:
     """
@@ -117,43 +179,81 @@ class ThreatInspector:
         return self.get_summary()
 
     def _deduplicate_vulnerabilities(self):
-        """Remove duplicate vulnerabilities based on title and asset."""
-        seen = {}
-        unique = []
+        """Collapse the same finding when more than one scan reported it.
+
+        Two scanners covering one host report the same issue, and loading a
+        directory of exports exists precisely so that they can. What matters is
+        which copy survives when they disagree.
+
+        This used to keep whichever copy had the LONGER DESCRIPTION, and
+        nothing else. So a critical remote code execution carrying a terse
+        description lost to an informational duplicate carrying a wordy one:
+        the client's report kept the informational row, and the critical —
+        with its CVSS score — left the report entirely. Severity is the one
+        thing a duplicate must never be able to talk down.
+
+        Severity now decides. Richness only breaks a tie between equal
+        severities, and either way every field the winner left empty is filled
+        from the copy it displaced, so choosing a winner cannot cost a CVE, a
+        score or a fix that only the other copy had.
+
+        The rebuild is also no longer quadratic: the old branch rescanned the
+        whole output list on every replacement, filtering by `!=` — and
+        ParsedVulnerability is a plain dataclass, so that compares by VALUE and
+        would drop any other copy that happened to be field-identical.
+        """
+        best: dict[tuple, ParsedVulnerability] = {}
+        first_seen: list[tuple] = []
 
         for vuln in self._vulnerabilities:
-            # Create a key based on title, asset, and port
+            # Title is matched case-insensitively: two scanners naming the same
+            # issue rarely capitalise it the same way.
             key = (
                 vuln.title.lower().strip(),
                 vuln.asset_ip or vuln.asset_name,
                 vuln.asset_port,
             )
 
-            if key not in seen:
-                seen[key] = vuln
-                unique.append(vuln)
-            else:
-                # Keep the one with more information
-                existing = seen[key]
-                if len(vuln.description) > len(existing.description):
-                    seen[key] = vuln
-                    unique = [v for v in unique if v != existing]
-                    unique.append(vuln)
+            incumbent = best.get(key)
+            if incumbent is None:
+                best[key] = vuln
+                first_seen.append(key)
+                continue
 
-        self._vulnerabilities = unique
+            if _preference(vuln) < _preference(incumbent):
+                winner, loser = vuln, incumbent
+            else:
+                winner, loser = incumbent, vuln
+            best[key] = _fill_gaps(winner, loser)
+
+        self._vulnerabilities = [best[key] for key in first_seen]
 
     def _enrich_remediation(self):
-        """Generate remediation guidance for vulnerabilities."""
+        """Generate remediation guidance for findings that arrived without any.
+
+        The trigger used to be `len(vuln.solution) < 50`, and generate_remediation
+        only hands a scanner's own text back when it is longer than 50
+        characters — so any solution under that was REPLACED by generic
+        guidance. "Upgrade nginx to 1.18.1 and disable TLS 1.0." became
+        "Address within 30 days. General Remediation Steps for: ...".
+
+        Length is not a proxy for quality; if anything it is the inverse, since
+        the most precise fix is usually the shortest sentence on the page. The
+        scanner raised the finding and knows what it looked at, so its text is
+        kept whenever there is any, and guidance is generated only to fill a
+        genuine blank.
+        """
         for vuln in self._vulnerabilities:
-            if not vuln.solution or len(vuln.solution) < 50:
-                result = generate_remediation(
-                    title=vuln.title,
-                    description=vuln.description,
-                    cve_id=vuln.cve_id,
-                    severity=vuln.severity,
-                    existing_solution=vuln.solution,
-                )
-                vuln.solution = result.guidance
+            if vuln.solution and vuln.solution.strip():
+                continue
+            result = generate_remediation(
+                title=vuln.title,
+                description=vuln.description,
+                cve_id=vuln.cve_id,
+                severity=vuln.severity,
+                existing_solution=vuln.solution,
+            )
+            vuln.solution = result.guidance
 
     def _map_compliance(self):
         """Map vulnerabilities to compliance frameworks."""
@@ -178,7 +278,12 @@ class ThreatInspector:
 
         for vuln in self._vulnerabilities:
             severity_counts[vuln.severity] += 1
-            asset_counts[vuln.asset_ip or vuln.asset_name] += 1
+            # A finding with neither an IP nor a name is not an asset. Counting
+            # it made "assets affected" report 2 for one host plus one
+            # host-less finding, which is a number a client reads and acts on.
+            asset = vuln.asset_ip or vuln.asset_name
+            if asset:
+                asset_counts[asset] += 1
 
         for result in self._parse_results:
             scanner_counts[result.scanner_type] += len(result.vulnerabilities)
