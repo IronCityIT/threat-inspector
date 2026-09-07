@@ -149,8 +149,11 @@ def build_payload(scan: dict, meta: dict[str, str]) -> dict[str, Any]:
     scan_status = scan.get("status", "ok")
     module_errors = scan.get("errors") or []
     file_failures = scan.get("files_failed") or []
+    skipped = scan.get("skipped") or []
 
-    # ok / partial / dry_run have real results behind them; failed does not.
+    # ok / partial / degraded / dry_run have real results behind them; failed
+    # does not. `scan_status` is carried through verbatim below, so a record
+    # marked "completed" still says whether the run was fully assessed.
     record_status = "failed" if scan_status == "failed" else "completed"
 
     payload: dict[str, Any] = {
@@ -170,6 +173,12 @@ def build_payload(scan: dict, meta: dict[str, str]) -> dict[str, Any]:
             "target_count": scan.get("target_count", 0),
             "module_errors": module_errors[:MAX_ERRORS_ON_RECORD],
             "module_error_count": len(module_errors),
+            # Capabilities that never ran because their scanner is not
+            # installed. Without this the record cannot distinguish "we looked
+            # and found nothing" from "we never looked", and the client is told
+            # the former.
+            "modules_skipped": skipped[:MAX_ERRORS_ON_RECORD],
+            "modules_skipped_count": len(skipped),
             "files_failed": file_failures[:MAX_ERRORS_ON_RECORD],
             "rejected_targets": scan.get("rejected_targets") or [],
             "stats": scan.get("stats") or {},

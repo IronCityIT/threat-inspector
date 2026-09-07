@@ -154,8 +154,8 @@ dashboard/public/           Firebase-hosted SPA (RETIRING — see §5)
 File-ingestion modules: `nmap_ingest`, `nessus_ingest`, `zap_ingest`,
 `qualys_ingest`, `qualys_compliance_ingest`.
 
-**VERIFIED defect, not yet fixed:** a module whose external tool is not installed
-returns an empty list and is recorded as a *successful run with zero findings*.
+**VERIFIED defect, FIXED.** A module whose external tool was not installed
+returned an empty list and was recorded as a *successful run with zero findings*.
 Reproduced at `0e70572`:
 
 ```
@@ -164,8 +164,17 @@ status: ok | findings: 0 | stats: {'module_runs': 1, 'module_runs_failed': 0}
 ```
 
 `subfinder` is not installed on this box, so nothing was enumerated — and the run
-reported `ok`. A fix exists on branch `feat/threat-inspector-capability-reporting`
-(commit `5d37c67`, **unmerged, not reviewed against this architecture**); see §12.
+reported `ok`. Modules now **declare** what they need (`ScanModule.requires`), the
+runner checks before executing, and the same command now reports:
+
+```
+status: failed | skipped: [{'module': 'subdomain_enum', 'target': '…',
+                            'missing': ['subfinder']}]
+```
+
+A run where some capabilities ran cleanly and others were skipped reports the new
+status **`degraded`** — distinct from both `ok` and `partial`, and carried into
+the stored record's diagnostics as `modules_skipped`.
 
 ---
 
@@ -646,7 +655,7 @@ Ordered by value. Blocked items say what blocks them.
 | 3 | **Reconcile integer `clients.id` with the `client_id` slug** (§4.1) | ✅ **DONE** — resolved in favour of the slug; `storage/schema.py` |
 | 4 | **Self-hosted persistence layer**: schema + tenant-scoped repository, tested, *not deployed* | ✅ **DONE** — `src/threat_inspector/storage/`, 49 tests. Alembic migrations still outstanding |
 | 5 | **Re-express the tenant-isolation invariants against the DB layer** (§5.3) | ✅ **DONE** — `tests/test_storage_repository.py` |
-| 6 | **Merge capability reporting** (§2.4) — branch `feat/threat-inspector-capability-reporting` @ `5d37c67` | Ready, needs review against this architecture |
+| 6 | **Capability reporting** (§2.4) — a missing scanner no longer reports as a clean scan | ✅ **DONE** — modules declare `requires`; runner skips, records and reports `degraded` |
 | 7 | **Enable branch protection on `main`** (§10.2.1) | BLOCKED: repository setting, needs Bill |
 | 8 | Decide `tls_cert_check` third-party disclosure | BLOCKED: product decision |
 | 9 | Decide `utils/remediation.py` gpt2 path | BLOCKED: product decision |
@@ -733,9 +742,12 @@ or anything that is not `401` means investigate.
 | `ok` | Every attempted module ran without raising |
 | `partial` | Some modules raised; others produced findings |
 | `failed` | Every attempted module raised |
+| `degraded` | Everything that ran ran cleanly, but some capabilities never ran — their scanner is not installed |
 | `dry_run` | Nothing executed by design |
 
-**An `ok` with zero findings does not currently mean "clean"** — see §2.4.
+An `ok` with zero findings now genuinely means the selected capabilities ran and
+found nothing. A capability that could not run reports `degraded` (or `failed`,
+when nothing could run at all) and names what was missing.
 
 ---
 

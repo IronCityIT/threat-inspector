@@ -51,9 +51,27 @@ class ScanModule(ABC):
     description: str = ""  # human-readable, client-safe (white-labeled)
     target_kinds: tuple[str, ...] = ("ip", "url", "domain", "hostname")
     groups: tuple[str, ...] = ("standard",)  # e.g. ("quick","standard","deep")
+    # External CLI scanners this module cannot work without. Declared rather
+    # than discovered, so the runner can tell "this capability did not run" from
+    # "this capability ran and found nothing" WITHOUT executing the module.
+    #
+    # Before this existed, a module whose scanner was not installed returned an
+    # empty list and was recorded as a successful run with zero findings — which
+    # is byte-identical to a clean result. A scan reporting "no web application
+    # vulnerabilities" when the web scanner was never installed is the worst
+    # thing a security product can say.
+    requires: tuple[str, ...] = ()
 
     def applies_to(self, kind: str) -> bool:
         return kind in self.target_kinds
+
+    def missing_requirements(self) -> list[str]:
+        """Which of this module's required scanners are not on PATH."""
+        # Imported here: base.py is the framework root and must not depend on
+        # the modules package, which imports base itself.
+        import shutil
+
+        return [tool for tool in self.requires if shutil.which(tool) is None]
 
     @abstractmethod
     def run(self, target: Target, ctx: dict[str, Any]) -> list[Finding]:

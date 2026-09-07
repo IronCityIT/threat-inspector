@@ -41,6 +41,7 @@ class SubdomainEnum(ScanModule):
     description = "Enumerates subdomains that expand the target's attack surface."
     target_kinds = ("domain",)
     groups = ("standard", "deep")
+    requires = ("subfinder",)
 
     def run(self, target, ctx: dict[str, Any]) -> list[Finding]:
         raw = run_cmd(["subfinder", "-d", target.value, "-silent"], timeout=300)

@@ -53,6 +53,7 @@ class ServiceFingerprint(ScanModule):
     description = "Identifies the software and version exposed on each open port."
     target_kinds = ("ip", "domain", "hostname")
     groups = ("standard", "deep")
+    requires = ("nmap",)
 
     def run(self, target, ctx: dict[str, Any]) -> list[Finding]:
         raw = run_cmd(

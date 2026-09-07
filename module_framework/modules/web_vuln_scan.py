@@ -52,6 +52,7 @@ class WebVulnScan(ScanModule):
     description = "Actively probes a web application for known vulnerabilities."
     target_kinds = ("url",)
     groups = ("deep",)
+    requires = ("nuclei",)
 
     def run(self, target, ctx: dict[str, Any]) -> list[Finding]:
         raw = run_cmd(
