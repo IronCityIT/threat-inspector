@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from threat_inspector import ThreatInspector, __version__
 from threat_inspector.api.auth import current_tenant
+from threat_inspector.api.store import router as store_router
 from threat_inspector.config import get_settings
 from threat_inspector.parsers import SUPPORTED_FORMATS
 
@@ -33,6 +34,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# The read side of the self-hosted store (MariaDB). Additive: the in-memory
+# flow below is untouched. These routes answer 503 when DATABASE_URL is unset,
+# so the API still starts and serves without a store configured.
+app.include_router(store_router)
+
 
 # Multi-tenant in-memory store: one inspector per client_id so no client's
 # uploaded scan data is ever visible on another client's requests.
