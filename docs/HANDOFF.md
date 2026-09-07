@@ -659,6 +659,7 @@ Ordered by value. Blocked items say what blocks them.
 | 7 | **Enable branch protection on `main`** (§10.2.1) | BLOCKED: repository setting, needs Bill |
 | 8 | Decide `tls_cert_check` third-party disclosure | BLOCKED: product decision |
 | 9 | Decide `utils/remediation.py` gpt2 path | BLOCKED: product decision |
+| 9b | **Move the API's write path onto the store** (`_inspectors` is process-local) | Ready — read path done |
 | 10 | Re-implement the dashboard security headers off `firebase.json` (§5.2) | Follows the hosting decision |
 | 11 | Cover or remove `src/threat_inspector/cli.py` (0%, declared entry point, unused) | Ready |
 | 12 | RBAC model (§9.3) | BLOCKED: product decision |
@@ -977,8 +978,42 @@ The database is a temporary SQLite file; nothing leaves the machine. Without
 `SKIPPED (NOT PROVEN)` rather than passing quietly, and CI asserts both imports
 in the smoke job so a skip there cannot go unnoticed.
 
+### The read side — VERIFIED
+
+`src/threat_inspector/api/store.py`, mounted at `/api/v1/store`:
+
+| Route | Returns |
+|---|---|
+| `GET /scans` | this tenant's stored scans, newest first |
+| `GET /scans/{scan_id}` | one scan, or **404** |
+| `GET /scans/{scan_id}/findings` | that scan's findings, worst first |
+| `GET /findings` | every stored finding for this tenant |
+| `GET /summary` | severity totals, every band including zeros |
+
+**Additive** — the in-memory upload/analyze flow in `main.py` is untouched. This
+is the read path a dashboard would call instead of reading Firestore directly,
+and it is the beginning of the answer to the recorded gap that `_inspectors` is
+a process-local dict that survives neither a restart nor a second replica.
+
+Tenancy is enforced twice over, and both halves are tested through the real
+ASGI app: the tenant comes from the caller's credential (`current_tenant`), and
+every query goes through `ScanRepository`, which has no unscoped entry point.
+A `client_id` in the query string that is not the caller's own is **403**;
+another tenant's `scan_id` is **404**, not 403, so nothing is disclosed about
+which scan ids exist elsewhere. Two tenants storing a scan under the *same* id
+each read only their own.
+
+The store is optional at runtime: with no `DATABASE_URL` these routes answer
+**503** (`store_not_configured`) and the rest of the API keeps working — and a
+credential is still required first, so 503 is not a way to probe the API without
+a token. SQLAlchemy is imported lazily so the API stays importable on a machine
+that has not installed it.
+
 ### Still outstanding on this path
 
+- **The write path is still in-memory.** `POST /api/v1/scans/upload` and
+  `/api/v1/analyze` still use the process-local `_inspectors` dict. Moving them
+  onto the store is the next step on this path and is not blocked.
 - **Nothing is wired.** `_consensus-store.yml` still POSTs to `storeScanResults`.
   Repointing it needs the decisions in §3.3 and must keep fail-closed behaviour.
 - **No MariaDB has ever been connected to** from this repository. The DDL is
