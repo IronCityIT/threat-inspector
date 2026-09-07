@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -479,6 +481,140 @@ def check_payload(scan_doc: dict) -> None:
         )
 
 
+def storage_available() -> str | None:
+    """Why the self-hosted store cannot be exercised here, or None if it can."""
+    for module in ("sqlalchemy", "alembic"):
+        try:
+            __import__(module)
+        except ImportError:
+            return f"{module} is not installed"
+    return None
+
+
+def check_self_hosted_store(scan_doc: dict) -> None:
+    """The self-hosted path end to end, through the real entry points.
+
+    Everything else in this file proves the scan and the payload. This proves
+    what happens to the payload next: a real migration, a real loader
+    subprocess, and a real database that is then read back. The unit tests
+    exercise the same code in-process; this proves the pieces are still wired
+    together and that the CLI a workflow would call behaves as documented.
+
+    Nothing is deployed and nothing leaves this machine — the database is a
+    temporary SQLite file. MariaDB-specific correctness is covered by compiling
+    the DDL for the MySQL dialect in the unit suite; no credential exists for a
+    real MariaDB (docs/HANDOFF.md §13.2).
+    """
+    print("\nself-hosted store (end to end)")
+
+    why = storage_available()
+    if why:
+        for name in (
+            "the store migrates",
+            "the loader writes a scan",
+            "the findings are readable back",
+            "the loader refuses an unconfigured destination",
+            "the loader refuses an unmigrated database",
+            "re-loading the same scan does not double the findings",
+        ):
+            skip(name, why)
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        db = tmp_path / "store.db"
+        dsn = f"sqlite:///{db}"
+        env = dict(os.environ, DATABASE_URL=dsn, PYTHONPATH=str(ROOT / "src"))
+
+        src = tmp_path / "findings.json"
+        src.write_text(json.dumps(scan_doc))
+        payload = tmp_path / "payload.json"
+        run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "build_store_payload.py"),
+                "--findings",
+                str(src),
+                "--out",
+                str(payload),
+                "--scan-type",
+                "modular_scan",
+                "--scan-id",
+                "smoke-store-1",
+                "--client-id",
+                "smoke",
+                "--client-name",
+                "Smoke Client",
+                "--target",
+                "fixtures",
+                "--consensus-status",
+                "skipped",
+            ]
+        )
+
+        loader = [
+            sys.executable,
+            "-m",
+            "threat_inspector.storage.loader",
+            "--payload",
+            str(payload),
+        ]
+
+        # A destination that was never configured must not look like success.
+        # This is the exact bug the Firebase store step shipped with: an unset
+        # URL warned and exited 0, and every scan discarded its findings.
+        unconfigured = dict(env)
+        unconfigured.pop("DATABASE_URL")
+        proc = subprocess.run(loader, capture_output=True, text=True, env=unconfigured)
+        check(
+            "the loader refuses an unconfigured destination",
+            proc.returncode == 1,
+            f"exit {proc.returncode}",
+        )
+
+        # A database nobody has migrated must not be silently created.
+        proc = subprocess.run(loader, capture_output=True, text=True, env=env)
+        check(
+            "the loader refuses an unmigrated database",
+            proc.returncode == 2,
+            f"exit {proc.returncode}",
+        )
+
+        proc = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=env,
+        )
+        check("the store migrates", proc.returncode == 0, proc.stderr.strip()[-200:])
+
+        proc = subprocess.run(loader, capture_output=True, text=True, env=env)
+        check("the loader writes a scan", proc.returncode == 0, proc.stderr.strip()[-200:])
+
+        stored = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        expected = len(json.loads(payload.read_text())["findings"])
+        check(
+            "the findings are readable back",
+            _stored_findings(db) == expected == stored.get("findings"),
+            f"database {_stored_findings(db)}, reported {stored.get('findings')}, "
+            f"payload {expected}",
+        )
+
+        # A retried run must not double the estate.
+        subprocess.run(loader, capture_output=True, text=True, env=env)
+        check(
+            "re-loading the same scan does not double the findings",
+            _stored_findings(db) == expected,
+            f"{_stored_findings(db)} after a second load",
+        )
+
+
+def _stored_findings(db: Path) -> int:
+    with sqlite3.connect(db) as connection:
+        return int(connection.execute("SELECT COUNT(*) FROM ti_findings").fetchone()[0])
+
+
 def check_catalog() -> None:
     print("\ndashboard catalog")
     committed = ROOT / "dashboard" / "public" / "catalog.json"
@@ -517,6 +653,7 @@ def main() -> int:
         ingest_doc = check_ingest()
         check_corrupt_upload()
         check_payload(ingest_doc)
+        check_self_hosted_store(ingest_doc)
         check_catalog()
     finally:
         srv.shutdown()

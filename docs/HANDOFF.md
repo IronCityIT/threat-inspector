@@ -954,6 +954,29 @@ Fixed by passing `disable_existing_loggers=False`, with a regression test that
 fails against the default. A migration has no business switching off the
 application's logging.
 
+### End-to-end evidence — VERIFIED
+
+`tools/smoke_test.py` now exercises the self-hosted path through the real entry
+points as subprocesses: build the payload, refuse without a destination, refuse
+an unmigrated database, migrate, load, read the rows back, and load again.
+
+```
+self-hosted store (end to end)
+   ok   the loader refuses an unconfigured destination
+   ok   the loader refuses an unmigrated database
+   ok   the store migrates
+   ok   the loader writes a scan
+   ok   the findings are readable back
+   ok   re-loading the same scan does not double the findings
+
+50 passed, 0 failed, 0 skipped
+```
+
+The database is a temporary SQLite file; nothing leaves the machine. Without
+`sqlalchemy`/`alembic` these six checks **skip loudly** as
+`SKIPPED (NOT PROVEN)` rather than passing quietly, and CI asserts both imports
+in the smoke job so a skip there cannot go unnoticed.
+
 ### Still outstanding on this path
 
 - **Nothing is wired.** `_consensus-store.yml` still POSTs to `storeScanResults`.

@@ -65,6 +65,13 @@ jobs:
       # thing proving the parsers still match current nmap output is lost.
       - name: Install nmap
         run: sudo apt-get update -qq && sudo apt-get install -y -qq nmap
+      # The end-to-end store checks skip loudly without these. A skip here
+      # would mean the self-hosted path is unproven while the job stays green,
+      # so make their absence a failure instead.
+      - name: Storage dependencies are present
+        run: |
+          python -c "import sqlalchemy; print('sqlalchemy', sqlalchemy.__version__)"
+          python -c "import alembic; print('alembic', alembic.__version__)"
       # Drives the real entry points as subprocesses against the committed
       # fixtures and a live HTTP server on loopback. Unit tests prove the pieces;
       # this proves they are still wired together.
