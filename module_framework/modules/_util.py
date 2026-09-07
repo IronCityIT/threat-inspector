@@ -153,11 +153,64 @@ def http_get(url: str, timeout: int = 15) -> str | None:
 
 
 def fetch_cert(host: str, port: int = 443, timeout: int = 15) -> dict | None:
-    """Return the peer TLS certificate dict (as from getpeercert()), or None."""
+    """Return the peer TLS certificate dict (as from getpeercert()), or None.
+
+    Only ever returns a certificate that VALIDATED. See inspect_tls() for why
+    that is not enough on its own, and prefer it for anything that has to
+    report on the certificate rather than merely read a trusted one.
+    """
+    return inspect_tls(host, port=port, timeout=timeout).cert
+
+
+@dataclass(frozen=True)
+class TlsInspection:
+    """What one TLS handshake told us.
+
+    The three outcomes are deliberately distinct, because collapsing them is
+    what made a broken certificate look like a healthy one:
+
+      reachable=False              nothing is serving TLS here
+      reachable=True, verified=False   TLS is served and the certificate is BAD
+      reachable=True, verified=True    TLS is served and the certificate is good
+    """
+
+    reachable: bool
+    verified: bool
+    cert: dict | None = None
+    reason: str = ""  # OpenSSL's verification message, when verification failed
+    error: str = ""  # transport-level failure, when nothing answered
+
+
+def inspect_tls(host: str, port: int = 443, timeout: int = 15) -> TlsInspection:
+    """Handshake with a TLS endpoint and report what happened, not just the cert.
+
+    fetch_cert used to be the only way in, and it validated the peer with a
+    default context and returned None on any failure. That single None had to
+    stand for "host unreachable", "not serving TLS" and "certificate rejected"
+    alike — so an EXPIRED certificate raised SSLCertVerificationError, became
+    None, and tls_cert_check skipped the expiry finding entirely. The module
+    reported nothing about the one condition it exists to catch, and nothing is
+    what a healthy host also reports.
+
+    The same silence covered a self-signed certificate, a hostname mismatch and
+    an untrusted issuer — every certificate failure a client would want to know
+    about, and each of which a browser refuses outright.
+
+    A verification failure is now its own answer: the handshake got far enough
+    to be shown a certificate and reject it, which is itself proof the host is
+    reachable and serving TLS, so no second connection is needed to establish
+    that.
+    """
     ctx = ssl.create_default_context()
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as ssock:
-                return ssock.getpeercert()
-    except (OSError, ssl.SSLError, ValueError):
-        return None
+                return TlsInspection(reachable=True, verified=True, cert=ssock.getpeercert())
+    except ssl.SSLCertVerificationError as e:
+        # verify_message is OpenSSL's own wording ("certificate has expired",
+        # "self-signed certificate", "Hostname mismatch"); fall back to the
+        # exception text when the attribute is not populated.
+        reason = str(getattr(e, "verify_message", "") or e)
+        return TlsInspection(reachable=True, verified=False, reason=reason)
+    except (OSError, ssl.SSLError, ValueError) as e:
+        return TlsInspection(reachable=False, verified=False, error=str(e))
