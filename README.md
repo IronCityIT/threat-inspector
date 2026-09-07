@@ -29,8 +29,17 @@ and secret scanning — are planned as separate modules and are **not** yet pres
 | `asset-discovery.yml` | Subdomain & live-asset enumeration | 🟢 Safe |
 | `vuln-report.yml` | Aggregate uploaded scan exports into normalized findings | 🟢 Safe |
 
-Every scan feeds the shared pipeline: **findings → AI consensus analysis → `storeScanResults`
-(Firestore, partitioned by client)**.
+Every scan feeds the shared pipeline: **findings → AI consensus analysis → persistent
+store (partitioned by client)**.
+
+> **Architecture is changing (2026-09-07).** Firebase / Firestore / Firebase Hosting / GCP
+> product storage is **retired** from the ICIT target architecture. GitHub Actions remains
+> the execution and orchestration layer; persistent state moves to self-hosted, NAS-backed
+> infrastructure on MariaDB. The Firebase pipeline described below is the **current
+> implementation**, not the target. Nothing has been migrated yet.
+>
+> Read **[`docs/HANDOFF.md`](docs/HANDOFF.md)** before changing anything — it labels every
+> claim VERIFIED / TARGET / UNKNOWN and classifies every Firebase reference in the repo.
 
 ---
 
