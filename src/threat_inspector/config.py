@@ -3,11 +3,21 @@ Configuration management for Threat Inspector.
 Supports environment variables, .env files, and YAML config files.
 """
 
+import logging
 from pathlib import Path
 
 import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger("threat_inspector.config")
+
+# Top-level YAML sections this loader applies, plus the ones consumed elsewhere.
+# `scan_files` is read by .github/workflows/vuln-report.yml, not by Settings, so
+# it is known rather than unknown — warning about it would cry wolf.
+_KNOWN_YAML_SECTIONS = frozenset(
+    {"client", "domains", "compliance", "output", "report", "remediation", "logging", "scan_files"}
+)
 
 
 class DatabaseSettings(BaseSettings):
@@ -77,34 +87,78 @@ class Settings(BaseSettings):
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "Settings":
-        """Load settings from a YAML configuration file."""
+        """Load settings from a YAML configuration file.
+
+        Two shapes are accepted, because two are in use. `examples/config.yaml`
+        writes `compliance.frameworks` and `output.formats`; `configs/client.yaml`
+        — the file an operator is told to edit before a run — writes them under
+        a `report:` block, and NOTHING read that. Measured against the shipped
+        file:
+
+            compliance_frameworks -> ['pci-dss']    (the file says pci-dss, hipaa, soc2)
+            report formats        -> ['html']       (the file says html, json)
+
+        So an operator who configured HIPAA and SOC 2 got a report carrying
+        neither, and one who asked for JSON got only HTML — silently, because an
+        unrecognised key looks exactly like a key that was applied.
+
+        Unknown top-level sections are now warned about for the same reason.
+        """
         settings = cls()
 
-        if yaml_path.exists():
-            with open(yaml_path) as f:
-                config = yaml.safe_load(f)
+        if not yaml_path.exists():
+            return settings
 
-            if config:
-                if "client" in config:
-                    settings.client_name = config["client"].get("name")
+        with open(yaml_path) as f:
+            config = yaml.safe_load(f)
 
-                if "domains" in config:
-                    settings.domains = config["domains"]
+        if not config:
+            return settings
 
-                if "compliance" in config:
-                    settings.compliance_frameworks = config["compliance"].get("frameworks", [])
+        if "client" in config:
+            settings.client_name = config["client"].get("name")
 
-                if "output" in config:
-                    if "directory" in config["output"]:
-                        settings.reports.output_dir = Path(config["output"]["directory"])
-                    if "formats" in config["output"]:
-                        settings.reports.default_formats = config["output"]["formats"]
+        if "domains" in config:
+            settings.domains = config["domains"]
 
-                if "remediation" in config:
-                    if "engine" in config["remediation"]:
-                        settings.remediation.engine = config["remediation"]["engine"]
-                    if "model" in config["remediation"]:
-                        settings.remediation.ollama_model = config["remediation"]["model"]
+        if "compliance" in config:
+            settings.compliance_frameworks = config["compliance"].get("frameworks", [])
+
+        if "output" in config:
+            if "directory" in config["output"]:
+                settings.reports.output_dir = Path(config["output"]["directory"])
+            if "formats" in config["output"]:
+                settings.reports.default_formats = config["output"]["formats"]
+
+        # The `report:` shape, which configs/client.yaml has always used. Read
+        # after `output`/`compliance` so an explicit one of those still wins.
+        report = config.get("report") or {}
+        if "formats" in report:
+            settings.reports.default_formats = report["formats"]
+        if "compliance_frameworks" in report and "compliance" not in config:
+            settings.compliance_frameworks = report["compliance_frameworks"]
+
+        if "remediation" in config:
+            if "engine" in config["remediation"]:
+                settings.remediation.engine = config["remediation"]["engine"]
+            if "model" in config["remediation"]:
+                settings.remediation.ollama_model = config["remediation"]["model"]
+
+        logging_config = config.get("logging") or {}
+        if "level" in logging_config:
+            settings.log_level = str(logging_config["level"])
+        if logging_config.get("file"):
+            settings.log_file = Path(logging_config["file"])
+
+        unknown = [key for key in config if key not in _KNOWN_YAML_SECTIONS]
+        if unknown:
+            log.warning(
+                "ignoring unrecognised section(s) in %s: %s — nothing in the file "
+                "will apply them; known sections: %s",
+                yaml_path,
+                ", ".join(sorted(unknown)),
+                ", ".join(sorted(_KNOWN_YAML_SECTIONS)),
+            )
 
         return settings
 
