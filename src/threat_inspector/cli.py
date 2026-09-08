@@ -12,6 +12,7 @@ from rich.table import Table
 
 from threat_inspector import ThreatInspector, __version__
 from threat_inspector.parsers import SUPPORTED_FORMATS
+from threat_inspector.reports import REPORT_FORMATS
 
 console = Console()
 
@@ -47,7 +48,9 @@ def main():
     "-f",
     multiple=True,
     default=["html"],
-    type=click.Choice(["html", "json", "csv", "pdf"]),
+    # From REPORT_FORMATS, so the CLI cannot offer an output the library has no
+    # branch for. "pdf" used to be listed here and implemented nowhere.
+    type=click.Choice(REPORT_FORMATS),
     help="Output format(s) (default: html)",
 )
 @click.option("--client", "-c", default=None, help="Client name for the report")
@@ -112,6 +115,17 @@ def analyze(
             progress.update(
                 task, description=f"Loaded {len(results)} files: {total_vulns} findings"
             )
+            if not results:
+                # Reading NO files is not the same as reading files that found
+                # nothing, and only the second is a clean result. Reporting
+                # "Analysis complete" for the first tells someone their estate
+                # is fine when nothing was ever looked at.
+                console.print(
+                    f"[red]No scan files were read from {input_path}[/red] — "
+                    f"supported extensions: {', '.join(sorted(SUPPORTED_FORMATS))}"
+                    + ("" if recursive else "  (use --recursive to search subdirectories)")
+                )
+                sys.exit(1)
 
     # Analyze
     with Progress(
@@ -137,6 +151,8 @@ def analyze(
     client_name = client or "Assessment"
     timestamp = Path(input_path).stem if input_path.is_file() else "report"
 
+    failed_formats: list[str] = []
+
     for fmt in format:
         report_name = f"{timestamp}_vulnerability_report.{fmt}"
         report_path = output_path / report_name
@@ -161,6 +177,14 @@ def analyze(
                 console.print(f"  [green]→[/green] {report_path}")
             except Exception as e:
                 console.print(f"  [red]✗[/red] Failed to generate {fmt}: {e}")
+                failed_formats.append(fmt)
+
+    # A report that was asked for and not produced is a failure, whatever else
+    # went right. This used to print the error and still exit 0, so a scripted
+    # caller saw success and no file.
+    if failed_formats:
+        console.print(f"\n[red]Failed to generate: {', '.join(failed_formats)}[/red]\n")
+        sys.exit(1)
 
     console.print("\n[green]Analysis complete![/green]\n")
 

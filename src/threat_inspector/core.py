@@ -8,6 +8,7 @@ from pathlib import Path
 
 from threat_inspector.config import Settings, get_settings
 from threat_inspector.parsers import SUPPORTED_FORMATS, ParsedVulnerability, ParseResult, parse_file
+from threat_inspector.reports import REPORT_FORMATS
 from threat_inspector.utils.compliance import get_compliance_mappings
 from threat_inspector.utils.remediation import generate_remediation
 
@@ -354,7 +355,7 @@ class ThreatInspector:
 
         Args:
             output_path: Path for the output file
-            format: Report format (html, pdf, json, csv)
+            format: Report format — one of REPORT_FORMATS
             client_name: Client name for the report
             project_name: Project name for the report
             include_remediation: Include remediation guidance
@@ -380,7 +381,9 @@ class ThreatInspector:
         elif format.lower() == "csv":
             return self._generate_csv_report(output_path)
         else:
-            raise ValueError(f"Unsupported format: {format}")
+            raise ValueError(
+                f"Unsupported report format {format!r}; supported: {', '.join(REPORT_FORMATS)}"
+            )
 
     def _generate_html_report(
         self,
