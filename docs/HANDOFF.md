@@ -1,8 +1,8 @@
 # Threat Inspector — Developer Handoff
 
 **Repository:** `IronCityIT/threat-inspector`
-**This document written:** 2026-09-07
-**Written against commit:** `0e70572` (main)
+**This document written:** 2026-09-07, refreshed 2026-09-08
+**Written against commit:** `37e9791` (main)
 **Author:** autonomous SDLC agent (Claude Opus 5), on `icit-devbox`
 
 ---
@@ -62,15 +62,15 @@ asserts none reaches the DOM.
 
 ### 2.1 Test and gate inventory — VERIFIED
 
-Run on this box at commit `0e70572`:
+Run on this box at commit `37e9791`:
 
 | Gate | Command | Result |
 |---|---|---|
 | Format | `python3 -m ruff format --check .` | ✅ 65 files |
 | Lint | `python3 -m ruff check .` | ✅ all checks passed |
 | Types | `python3 -m mypy module_framework src` | ✅ 42 files, no issues |
-| Unit + integration | `python3 -m pytest -q` | ✅ **452 passed** |
-| End-to-end smoke | `python3 tools/smoke_test.py` | ✅ **44/44**, 0 skipped |
+| Unit + integration | `python3 -m pytest -q` | ✅ **710 passed** (with `sqlalchemy`/`alembic`; 4 skip without) |
+| End-to-end smoke | `python3 tools/smoke_test.py` | ✅ **50/50**, 0 skipped |
 | Catalog freshness | `python3 tools/build_catalog.py && git diff --exit-code` | ✅ zero diff |
 | Workflow YAML | `yaml.safe_load` × 10 | ✅ all parse |
 
@@ -83,8 +83,9 @@ JavaScript-side suites (VERIFIED as executed in CI, not re-run here today):
 functions **27 passed**, dashboard browser **16 passed**, Firestore rules against
 a real emulator **15 passed**.
 
-Coverage at `0e70572`: **76% overall**. Notable per-file: `tls_cert_check` 98%,
-`nessus` 91%, `zap` 89%, `core` 70%, `cli.py` **0%**, `models/__init__.py` **0%**.
+Coverage at `37e9791`: **87% overall**. Notable per-file: `compliance` 100%,
+`config` 98%, `tls_cert_check` 98%, `nessus` 91%, `zap` 89%, `cli.py` 86%,
+`core` 70%. `models/__init__.py` remains **0%** — see §12.
 
 ### 2.2 What was fixed in the four merges of 2026-09-06 — VERIFIED
 
@@ -106,6 +107,26 @@ and each carries regression tests that fail against the unfixed code.
 
 The common shape: **silence read as success.** None of these crashed; none failed
 a gate; all made the product report less than the truth.
+
+### Second wave — 2026-09-08
+
+Found the same way: run the thing and compare the answer to the input.
+
+| PR | Defect | Evidence |
+|---|---|---|
+| #19 | A capability whose scanner is not installed reported as a capability that found nothing | 22 tests |
+| #24 | The dashboard rendered a `degraded` scan **green as "completed"** — #19's fix defeated one layer out | 3 browser tests |
+| #26 | **`/api/v1/reports/generate` could not deliver a report in any format.** `FileResponse` was returned from inside a `with tempfile.TemporaryDirectory()` block, which is removed when the handler returns and before the body is streamed | 21 tests |
+| #26 | `pdf` was advertised by the CLI, the API and `core`'s docstring, and implemented in none of them. API: 500. CLI: printed a failure and exited **0** | included above |
+| #26 | The CLI exited **0** when a requested report failed, and when a directory yielded no readable scans at all | 19 tests |
+| #27 | `frameworks=["NIST 800-53"]` — the framework's own name — selected **nothing**; spaces survived normalisation | 42 tests |
+| #27 | "Dispatcher misconfiguration" claimed patch-management requirements via "dis-PATCH-er" | included above |
+| #28 | **`configs/client.yaml` was half-ignored.** Its `report:` block was never read, so configured HIPAA and SOC 2 never reached a report and `formats: [html, json]` produced only HTML | 21 tests |
+| #28 | `examples/config.yaml`'s `scanners:` block is read by nothing | included above |
+
+#27 and #28 are two halves of one failure: the config never reached the mapper,
+*and* the mapper could not be addressed by name. Either alone still produced a
+report missing frameworks the client had asked for.
 
 ### 2.3 Component map — VERIFIED
 
@@ -701,8 +722,8 @@ Ordered by value. Blocked items say what blocks them.
 python3 -m ruff format --check .
 python3 -m ruff check .
 python3 -m mypy module_framework src
-python3 -m pytest -q                       # 452 passed
-python3 tools/smoke_test.py                # 44/44, needs nmap for full coverage
+python3 -m pytest -q                       # 710 passed (4 skip without sqlalchemy/alembic)
+python3 tools/smoke_test.py                # 50/50, needs nmap for full coverage
 python3 tools/build_catalog.py && git diff --exit-code -- dashboard/public/catalog.json
 for f in .github/workflows/*.yml; do
   python3 -c "import yaml,sys;yaml.safe_load(open(sys.argv[1]))" "$f"; done
@@ -1080,12 +1101,12 @@ that question is still open (see the white-label note above).
 ## 17. Evidence and provenance
 
 Every command in this section was run on `icit-devbox` on **2026-09-07**, against
-`main` at **`0e70572`**.
+`main` at **`37e9791`**.
 
 | Claim | Command | Result |
 |---|---|---|
-| Test count | `python3 -m pytest -q` | 452 passed |
-| Smoke | `python3 tools/smoke_test.py` | 44/44, 0 skipped |
+| Test count | `python3 -m pytest -q` | 710 passed |
+| Smoke | `python3 tools/smoke_test.py` | 50/50, 0 skipped |
 | Lint/format/types | `ruff check .` / `ruff format --check .` / `mypy module_framework src` | clean; 65 files; 42 files |
 | CI green | `gh pr view 16 --json statusCheckRollup` | 7/7 SUCCESS |
 | Merges | `git log --oneline -6` | PRs #13, #14, #15, #16 on main |
