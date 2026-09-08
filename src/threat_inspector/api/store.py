@@ -262,7 +262,14 @@ async def upload_scan(
 
     try:
         result = parse_file(tmp_path, scanner_type)
+    except ValueError as e:
+        # The caller asserted a scanner_type that is unknown, or that cannot
+        # read this file. That is a bad request and the reason is the caller's
+        # own input, so it is safe and useful to say what was wrong.
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
+        # Anything else is ours. Report the type, not the message, which can
+        # carry paths or file contents.
         raise HTTPException(status_code=400, detail=f"parse_failed: {type(e).__name__}") from e
     finally:
         tmp_path.unlink(missing_ok=True)
