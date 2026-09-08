@@ -1,9 +1,31 @@
 """
 Compliance framework mapping for vulnerabilities.
 Maps vulnerabilities to PCI-DSS, HIPAA, SOC2, NIST, and other frameworks.
+
+These mappings become compliance claims in a client-facing report, so two
+things matter more than coverage of the keyword lists:
+
+  * asking for a framework by its own name must actually select it, and
+  * a keyword must not match a word that merely contains it.
+
+Both were wrong. `frameworks=["NIST 800-53"]` — the exact name these mappings
+use — selected nothing, because normalisation stripped hyphens and underscores
+but not spaces, and the result was compared for exact membership. And keyword
+matching was a plain substring test, so "Dispatcher misconfiguration" mapped to
+patch-management requirements on the strength of "dis-PATCH-er".
+
+The second fix is narrower than it first looks: substring matching is KEPT,
+because it is what makes "patch" match "unpatched" and "ssl" match "OpenSSL".
+Anchoring to a word boundary would have removed both of those real mappings to
+be rid of one false one, and on a compliance report a missing true mapping is
+worse than an extra one.
 """
 
+import logging
+import re
 from dataclasses import dataclass
+
+log = logging.getLogger("threat_inspector.utils.compliance")
 
 
 @dataclass
@@ -205,6 +227,63 @@ NIST_MAPPINGS = {
 }
 
 
+def _normalize_framework(name: str) -> str:
+    """Reduce a framework name to a comparable key.
+
+    Strips EVERY non-alphanumeric character, not just hyphens and underscores.
+    "NIST 800-53" — the name these mappings themselves use, and the one a human
+    writes in a config file — used to survive normalisation as "nist 80053",
+    match neither accepted key, and silently contribute no mappings at all.
+    """
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+# Normalised key -> the mapping table it selects. Aliases are deliberate: a
+# framework should answer to the names people actually write for it.
+_FRAMEWORK_TABLES: dict[str, dict[str, list[ComplianceMapping]]] = {
+    "pcidss": PCI_DSS_MAPPINGS,
+    "pci": PCI_DSS_MAPPINGS,
+    "hipaa": HIPAA_MAPPINGS,
+    "soc2": SOC2_MAPPINGS,
+    "nist": NIST_MAPPINGS,
+    "nist80053": NIST_MAPPINGS,
+}
+
+# What a caller may ask for, in the spelling most likely to be written.
+KNOWN_FRAMEWORKS = ("pci-dss", "hipaa", "soc2", "nist-800-53")
+
+DEFAULT_FRAMEWORKS = ["pci-dss", "hipaa", "soc2", "nist"]
+
+
+# Words that CONTAIN a keyword without meaning it.
+#
+# The first attempt at this fix anchored keywords to a word boundary, which does
+# kill "dis-PATCH-er" — and also killed "un-PATCH-ed" and "Open-SSL", both of
+# which are real mappings a client's report should carry. For a compliance
+# report a missing true mapping is worse than an extra one, so substring
+# matching stays and the known false matches are named here instead.
+_FALSE_MATCHES: dict[str, tuple[str, ...]] = {
+    "patch": ("dispatch",),
+}
+
+
+def _matches(keyword: str, title: str) -> bool:
+    """Does `keyword` appear in `title`, ignoring words that merely contain it?
+
+    Plain `keyword in title` mapped "Dispatcher misconfiguration" to
+    patch-management requirements — a compliance claim on a client's report
+    about a finding with nothing to do with patching.
+
+    Substring matching is kept deliberately: it is what makes "patch" match
+    "unpatched" and "ssl" match "OpenSSL". Only the specific words that carry a
+    keyword without its meaning are removed before the test.
+    """
+    haystack = title
+    for false_match in _FALSE_MATCHES.get(keyword, ()):
+        haystack = haystack.replace(false_match, " ")
+    return keyword in haystack
+
+
 def get_compliance_mappings(
     vulnerability_title: str,
     frameworks: list[str] | None = None,
@@ -214,41 +293,34 @@ def get_compliance_mappings(
 
     Args:
         vulnerability_title: The vulnerability title/name
-        frameworks: List of frameworks to check (default: all)
+        frameworks: Framework names to check (default: all known)
 
     Returns:
-        List of ComplianceMapping objects
+        List of ComplianceMapping objects, de-duplicated by (framework,
+        requirement) and in the order the frameworks were requested.
     """
     if frameworks is None:
-        frameworks = ["pci-dss", "hipaa", "soc2", "nist"]
+        frameworks = list(DEFAULT_FRAMEWORKS)
 
-    frameworks = [f.lower().replace("-", "").replace("_", "") for f in frameworks]
+    title_lower = (vulnerability_title or "").lower()
 
-    title_lower = vulnerability_title.lower()
-    mappings = []
-
-    # Check each framework
-    if "pcidss" in frameworks:
-        for keyword, maps in PCI_DSS_MAPPINGS.items():
-            if keyword in title_lower:
+    mappings: list[ComplianceMapping] = []
+    for requested in frameworks:
+        table = _FRAMEWORK_TABLES.get(_normalize_framework(requested))
+        if table is None:
+            # Silently contributing nothing is how a report ends up claiming a
+            # framework was considered when it never was. Say so.
+            log.warning(
+                "unknown compliance framework %r — no mappings will be produced for it; "
+                "known frameworks: %s",
+                requested,
+                ", ".join(KNOWN_FRAMEWORKS),
+            )
+            continue
+        for keyword, maps in table.items():
+            if _matches(keyword, title_lower):
                 mappings.extend(maps)
 
-    if "hipaa" in frameworks:
-        for keyword, maps in HIPAA_MAPPINGS.items():
-            if keyword in title_lower:
-                mappings.extend(maps)
-
-    if "soc2" in frameworks:
-        for keyword, maps in SOC2_MAPPINGS.items():
-            if keyword in title_lower:
-                mappings.extend(maps)
-
-    if "nist" in frameworks or "nist80053" in frameworks:
-        for keyword, maps in NIST_MAPPINGS.items():
-            if keyword in title_lower:
-                mappings.extend(maps)
-
-    # Remove duplicates
     seen = set()
     unique_mappings = []
     for m in mappings:
