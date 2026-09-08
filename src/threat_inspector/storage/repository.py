@@ -60,6 +60,15 @@ class ScanRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def commit(self) -> None:
+        """Commit the work done through this repository.
+
+        Exists so callers do not reach past the repository into its session:
+        the point of this class is that every path to the data is scoped, and a
+        caller holding the raw session can write whatever it likes.
+        """
+        self._session.commit()
+
     # -- writes ----------------------------------------------------------
 
     def upsert_client(self, client_id: str, client_name: str | None = None) -> Client:

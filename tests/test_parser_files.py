@@ -359,6 +359,45 @@ def test_a_score_from_a_script_table_is_a_number_not_text(tmp_path):
     assert isinstance(result.vulnerabilities[0].cvss_score, float)
 
 
+def test_a_spreadsheet_export_with_a_byte_order_mark_keeps_its_first_column(tmp_path):
+    """A guard, not a regression: this passes against the previous parser too.
+
+    A BOM in the first column's name is how the vulnerability-scan CSV parser
+    used to lose whole exports, and pandas happens to strip it already. This
+    pins that behaviour so a future change of reader — or of pandas — cannot
+    reintroduce the same loss here unnoticed.
+    """
+    path = tmp_path / "bom.csv"
+    path.write_bytes(
+        b"\xef\xbb\xbf" + b"Title,QID,Severity,IP,Port\nWeak cipher,1234,3,10.0.0.1,443\n"
+    )
+    result = QualysParser().parse(path)
+    assert result.total_count == 1
+    assert result.vulnerabilities[0].title == "Weak cipher"
+
+
+def test_a_spreadsheet_whose_rows_all_vanish_says_so_rather_than_reporting_zero(tmp_path):
+    """A confident zero is indistinguishable from a clean scan, and every silent
+    column mismatch takes exactly this shape."""
+    path = tmp_path / "odd.csv"
+    path.write_text("not,a,scan\n1,2,3\n", encoding="utf-8")
+    result = QualysParser().parse(path)
+    assert result.total_count == 0
+    assert len(result.warnings) == 1
+    assert "1 row(s) read" in result.warnings[0]
+    assert "not, a, scan" in result.warnings[0]
+
+
+def test_a_genuinely_empty_spreadsheet_is_not_reported_as_a_mismatch(tmp_path):
+    """No rows read is an empty scan, not a broken mapping. Warning here would
+    cry wolf on a legitimately clean result."""
+    path = tmp_path / "empty.csv"
+    path.write_text("Title,QID,Severity\n", encoding="utf-8")
+    result = QualysParser().parse(path)
+    assert result.total_count == 0
+    assert result.warnings == []
+
+
 def test_a_parsed_export_can_actually_be_reported(tmp_path):
     """The regression this closes: report generation raised ValueError.
 

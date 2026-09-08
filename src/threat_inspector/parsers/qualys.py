@@ -56,7 +56,15 @@ class QualysParser(BaseParser):
             if file_path.suffix.lower() in [".xlsx", ".xlsm"]:
                 df = pd.read_excel(file_path, engine="openpyxl")
             else:
-                df = pd.read_csv(file_path, encoding="utf-8")
+                # utf-8-sig rather than utf-8, defensively. Exports saved on
+                # Windows carry a BOM, and in the stdlib csv module those three
+                # bytes land inside the FIRST column's name — which is exactly
+                # how the vulnerability-scan CSV parser used to lose whole
+                # exports. pandas 3.0.3 strips the BOM on its own, so this is
+                # NOT fixing an observed bug here; it removes the dependence on
+                # that behaviour and matches the sibling parser. utf-8-sig is
+                # identical to utf-8 when there is no BOM.
+                df = pd.read_csv(file_path, encoding="utf-8-sig")
 
             metadata["total_rows"] = len(df)
             metadata["columns"] = list(df.columns)
@@ -71,6 +79,17 @@ class QualysParser(BaseParser):
                         vulnerabilities.append(vuln)
                 except Exception as e:
                     self.add_warning(f"Error parsing row: {e}")
+
+            # An export with data rows that yields nothing is the shape every
+            # silent column mismatch takes: the file opened, the rows were read,
+            # and each was dropped for want of a recognised title column.
+            # Reporting a confident zero there is indistinguishable from a clean
+            # scan, so say what was seen instead.
+            if len(df) and not vulnerabilities:
+                self.add_warning(
+                    f"{len(df)} row(s) read but none carried a recognised title column; "
+                    f"columns present: {', '.join(str(c) for c in df.columns) or 'none'}"
+                )
 
         except Exception as e:
             self.add_error(f"Failed to parse Qualys file: {e}")
