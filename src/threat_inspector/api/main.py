@@ -2,6 +2,7 @@
 FastAPI REST API for Threat Inspector.
 """
 
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -10,12 +11,14 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from threat_inspector import ThreatInspector, __version__
 from threat_inspector.api.auth import current_tenant
 from threat_inspector.api.store import router as store_router
 from threat_inspector.config import get_settings
 from threat_inspector.parsers import SUPPORTED_FORMATS
+from threat_inspector.reports import REPORT_FORMATS
 
 app = FastAPI(
     title="Iron City Threat Inspector API",
@@ -270,36 +273,59 @@ async def generate_report(
             map_compliance=request.include_compliance,
         )
 
-    # Generate to temp file
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        report_name = f"vulnerability_report.{request.format}"
-        report_path = Path(tmp_dir) / report_name
+    # A format we cannot produce is a bad REQUEST, not a server error. It used
+    # to reach generate_report, raise ValueError, and come back as a 500 with
+    # the raw exception text — for `pdf`, which the API itself advertised a
+    # media type for and which has never been implemented.
+    if request.format not in REPORT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported_format: {request.format!r}; supported: {list(REPORT_FORMATS)}",
+        )
 
-        try:
-            inspector.generate_report(
-                output_path=report_path,
-                format=request.format,
-                client_name=request.client_name,
-                project_name=request.project_name,
-                include_remediation=request.include_remediation,
-                include_compliance=request.include_compliance,
-            )
+    report_name = f"vulnerability_report.{request.format}"
 
-            # Determine media type
-            media_types = {
-                "html": "text/html",
-                "json": "application/json",
-                "csv": "text/csv",
-                "pdf": "application/pdf",
-            }
+    # NOT `with tempfile.TemporaryDirectory()`. FileResponse streams the file
+    # AFTER this handler returns, and a context-managed temp directory is
+    # removed the moment it does — so every report request died with
+    # "File at path /tmp/.../vulnerability_report.html does not exist".
+    # That was true for html, json and csv alike: the endpoint could not
+    # deliver a report at all.
+    #
+    # The directory is therefore created unmanaged and removed by a background
+    # task that runs once the response has been sent.
+    tmp_dir = tempfile.mkdtemp(prefix="ti-report-")
+    report_path = Path(tmp_dir) / report_name
 
-            return FileResponse(
-                path=report_path,
-                filename=report_name,
-                media_type=media_types.get(request.format, "application/octet-stream"),
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    def _cleanup() -> None:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    try:
+        inspector.generate_report(
+            output_path=report_path,
+            format=request.format,
+            client_name=request.client_name,
+            project_name=request.project_name,
+            include_remediation=request.include_remediation,
+            include_compliance=request.include_compliance,
+        )
+    except Exception as e:
+        _cleanup()
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    media_types = {
+        "html": "text/html",
+        "json": "application/json",
+        "csv": "text/csv",
+    }
+
+    return FileResponse(
+        path=report_path,
+        filename=report_name,
+        media_type=media_types.get(request.format, "application/octet-stream"),
+        # Runs after the body has been streamed, which is the whole point.
+        background=BackgroundTask(_cleanup),
+    )
 
 
 @app.delete("/api/v1/clear")

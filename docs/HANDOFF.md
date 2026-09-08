@@ -661,7 +661,7 @@ Ordered by value. Blocked items say what blocks them.
 | 9 | Decide `utils/remediation.py` gpt2 path | BLOCKED: product decision |
 | 9b | **Move the API's write path onto the store** | ✅ **DONE** — `POST /api/v1/store/scans/{scan_id}/upload` persists |
 | 10 | Re-implement the dashboard security headers off `firebase.json` (§5.2) | Follows the hosting decision |
-| 11 | Cover or remove `src/threat_inspector/cli.py` (0%, declared entry point, unused) | Ready |
+| 11 | Cover or remove `src/threat_inspector/cli.py` | ✅ **DONE** — covered (0% → 86%); running it found three failures that exited 0 |
 | 12 | RBAC model (§9.3) | BLOCKED: product decision |
 | 13 | Audit trail (§9.4) | BLOCKED: depends on #4 and #12 |
 | 14 | Install `subfinder`/`nuclei` in the scan environment so those modules do real work | Ready |
@@ -676,7 +676,7 @@ Ordered by value. Blocked items say what blocks them.
 |---|---|---|
 | A missing external scanner reports as a clean scan | A scan can report "no findings" for a capability that never ran | §2.4; fix unmerged |
 | `models/__init__.py` — 139 statements, 0% coverage, unused | Dead today; foundation under the new direction | §4.1 |
-| `cli.py` — 145 statements, 0% coverage, declared entry point | Ships in the package, nothing calls it | §12 #11 |
+| ~~`cli.py` at 0% coverage~~ | Closed — 86%, and the defects it hid are fixed | §12 #11 |
 | Integer vs. slug tenant identity | Two incompatible notions of "tenant" | §4.1 |
 | Dashboard security headers live only in `firebase.json` | Retiring Firebase drops real controls | §5.2 |
 
