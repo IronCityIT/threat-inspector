@@ -1,9 +1,40 @@
 """
-AI-powered remediation guidance generation.
-Supports local models (transformers), Ollama, and cloud APIs.
+Remediation guidance for a finding.
+
+What a client is told to DO about a finding is the most consequential text this
+product emits, so where it came from matters as much as what it says.
+
+Guidance comes from, in order of preference:
+
+  1. the scanner's own solution text, when the finding carried one;
+  2. a curated entry in STATIC_REMEDIATION, keyed on the finding's title;
+  3. a locally-run model, ONLY when an operator has explicitly configured one;
+  4. generic, deterministic steps.
+
+A model's output is labelled as such before it reaches a report. A client
+reading "here is how to fix it" is entitled to know whether a person wrote it.
+
+Removed: a `local` engine that generated remediation with **gpt2**.
+
+It was the DEFAULT engine. It was inert only by accident — `transformers` is
+not in requirements.txt — but `pyproject.toml` offers an `ai` extra that
+installs it, so `pip install threat-inspector[ai]` silently made a 2019
+general-purpose language model the source of security remediation advice in
+client-facing reports. Its output was assigned verbatim to `vuln.solution`
+(core.py) and rendered. gpt2 has no security knowledge; text it produces about
+remediating a vulnerability is fluent and unfounded, which is the worst
+combination for this particular field.
+
+CLAUDE.md is also explicit that AI analysis belongs to consensus-engine and is
+not to be duplicated in a product. Whether even the Ollama path below should
+remain is a product decision recorded in docs/HANDOFF.md; gpt2 was not a
+decision worth deferring.
 """
 
+import logging
 from dataclasses import dataclass
+
+log = logging.getLogger("threat_inspector.utils.remediation")
 
 
 @dataclass
@@ -11,7 +42,7 @@ class RemediationResult:
     """Result of remediation generation."""
 
     guidance: str
-    source: str  # "local", "ollama", "openai", "anthropic", "static"
+    source: str  # "scanner", "static", "ollama", or "generic"
     confidence: float = 1.0
 
 
@@ -145,6 +176,31 @@ def get_static_remediation(vulnerability_title: str) -> str | None:
     return None
 
 
+# Engines this module actually implements. "static" means: curated entries and
+# deterministic generic steps, no model.
+STATIC_ENGINE = "static"
+IMPLEMENTED_ENGINES = (STATIC_ENGINE, "ollama")
+
+# Prefixed to any guidance a model produced. A client reading "here is how to
+# fix it" is entitled to know whether a person wrote it — and `source` alone
+# does not survive: core.py assigns `result.guidance` to `vuln.solution` and the
+# report renders that field and nothing else.
+# Plain text, not markdown: reports/html.py escapes this field and converts
+# newlines to <br>, so emphasis markers would render as literal underscores.
+MODEL_GUIDANCE_NOTICE = "[Generated automatically - review before acting on it.]\n\n"
+
+
+def _labelled(result: RemediationResult) -> RemediationResult:
+    """Mark model-produced guidance in the text itself."""
+    if result.guidance.startswith(MODEL_GUIDANCE_NOTICE):
+        return result
+    return RemediationResult(
+        guidance=MODEL_GUIDANCE_NOTICE + result.guidance,
+        source=result.source,
+        confidence=result.confidence,
+    )
+
+
 def generate_remediation(
     title: str,
     description: str = "",
@@ -184,23 +240,29 @@ def generate_remediation(
             confidence=0.8,
         )
 
-    # Try AI-based remediation
+    # A locally-run model, only when an operator explicitly configured one.
     try:
         from threat_inspector.config import settings
 
-        engine = settings.remediation.engine.lower()
-
-        if engine == "ollama":
-            result = _generate_ollama(title, description, cve_id, severity)
-            if result:
-                return result
-
-        elif engine == "local":
-            result = _generate_local(title, description, cve_id, severity)
-            if result:
-                return result
+        engine = (settings.remediation.engine or "").lower().strip()
     except Exception:
-        pass
+        engine = STATIC_ENGINE
+
+    if engine == "ollama":
+        result = _generate_ollama(title, description, cve_id, severity)
+        if result:
+            return _labelled(result)
+    elif engine not in (STATIC_ENGINE, "", "generic"):
+        # Silently falling back means an operator who configured an engine gets
+        # generic boilerplate and believes their model wrote it. `openai` and
+        # `anthropic` were configurable — with API-key environment aliases —
+        # and implemented nowhere.
+        log.warning(
+            "remediation engine %r is not implemented; falling back to curated guidance. "
+            "Implemented engines: %s",
+            engine,
+            ", ".join(IMPLEMENTED_ENGINES),
+        )
 
     # Fallback to generic guidance
     return RemediationResult(
@@ -251,30 +313,6 @@ def _generate_ollama(
             guidance=guidance,
             source="ollama",
             confidence=0.85,
-        )
-    except Exception:
-        return None
-
-
-def _generate_local(
-    title: str, description: str, cve_id: str, severity: str
-) -> RemediationResult | None:
-    """Generate remediation using local transformers model."""
-    try:
-        from transformers import pipeline
-
-        # Use a small model for quick generation
-        generator = pipeline("text-generation", model="gpt2", max_length=200)
-
-        prompt = f"Security remediation for {title}: "
-        result = generator(prompt, num_return_sequences=1)
-
-        guidance = result[0]["generated_text"]
-
-        return RemediationResult(
-            guidance=guidance,
-            source="local",
-            confidence=0.6,
         )
     except Exception:
         return None

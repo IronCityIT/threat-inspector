@@ -607,9 +607,13 @@ Target state requires auditability. **Not built.**
    target hostname to the public SSL Labs API — revealing which hosts a client is
    having assessed. Unresolved product decision: keep, gate behind a flag, or drop.
 
-3. **`utils/remediation.py` can generate text with a local `gpt2` model.**
-   `CLAUDE.md` is explicit that AI analysis belongs to `consensus-engine`. The
-   dependency is now optional; the code path arguably should go.
+3. **`utils/remediation.py` retains an Ollama path.** The gpt2 engine is gone
+   — it was the default, and `pip install threat-inspector[ai]` would have made
+   a 2019 general-purpose model the source of security remediation advice in
+   client reports. Ollama remains, opt-in only, with anything it produces
+   labelled as generated before it reaches a client. `CLAUDE.md` says AI
+   analysis belongs to `consensus-engine`, so **whether even that should go is
+   still a product decision**.
 
 4. **12 moderate npm advisories** in the functions tree, resolvable only via
    `firebase-admin@14`. **The migration retires this tree entirely**, which
@@ -679,7 +683,7 @@ Ordered by value. Blocked items say what blocks them.
 | 6 | **Capability reporting** (§2.4) — a missing scanner no longer reports as a clean scan | ✅ **DONE** — modules declare `requires`; runner skips, records and reports `degraded` |
 | 7 | **Enable branch protection on `main`** (§10.2.1) | BLOCKED: repository setting, needs Bill |
 | 8 | Decide `tls_cert_check` third-party disclosure | BLOCKED: product decision |
-| 9 | Decide `utils/remediation.py` gpt2 path | BLOCKED: product decision |
+| 9 | ~~Decide `utils/remediation.py` gpt2 path~~ | ✅ **gpt2 removed** — it was the DEFAULT engine and generated security advice. Whether the remaining Ollama path should also go is still a product decision |
 | 9b | **Move the API's write path onto the store** | ✅ **DONE** — `POST /api/v1/store/scans/{scan_id}/upload` persists |
 | 10 | Re-implement the dashboard security headers off `firebase.json` (§5.2) | Follows the hosting decision |
 | 11 | Cover or remove `src/threat_inspector/cli.py` | ✅ **DONE** — covered (0% → 86%); running it found three failures that exited 0 |
