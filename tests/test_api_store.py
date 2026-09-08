@@ -250,6 +250,120 @@ def test_findings_for_a_scan_that_does_not_exist_are_a_404(client):
     assert client.get("/api/v1/store/scans/no-such-scan/findings", headers=ACME).status_code == 404
 
 
+FIXTURE = ROOT / "examples" / "file-ingest-selftest" / "nessus-export.csv"
+
+
+def upload(api, scan_id: str, name: str, body: bytes, headers=None):
+    return api.post(
+        f"/api/v1/store/scans/{scan_id}/upload",
+        headers=headers or ACME,
+        files={"file": (name, body, "text/csv")},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Uploading persists — the point of this path
+# ---------------------------------------------------------------------------
+
+
+def test_an_uploaded_export_is_persisted_and_readable_back(client):
+    """The difference from /api/v1/scans/upload is the whole point: that one
+    parses into a process-local dict that survives neither a restart nor a
+    second replica. This one writes rows."""
+    response = upload(client, "up-1", "export.csv", FIXTURE.read_bytes())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "stored"
+    assert body["findings"] > 0
+
+    stored = client.get("/api/v1/store/scans/up-1/findings", headers=ACME).json()
+    assert stored["count"] == body["findings"]
+
+
+def test_the_stored_summary_matches_what_was_parsed(client):
+    body = upload(client, "up-1", "export.csv", FIXTURE.read_bytes()).json()
+    summary = client.get("/api/v1/store/scans/up-1", headers=ACME).json()["summary"]
+    assert summary["total"] == body["findings"]
+
+
+def test_an_upload_lands_in_the_callers_own_tenant_only(client):
+    upload(client, "up-1", "export.csv", FIXTURE.read_bytes(), headers=ACME)
+    assert client.get("/api/v1/store/scans/up-1", headers=ACME).status_code == 200
+    assert client.get("/api/v1/store/scans/up-1", headers=GLOBEX).status_code == 404
+
+
+def test_a_file_the_parser_could_not_read_is_refused_not_stored(client):
+    """A corrupt upload recorded as a clean result is the failure this product
+    keeps finding in its own ingestion. It must not reappear at the API."""
+    response = client.post(
+        "/api/v1/store/scans/broken/upload",
+        headers=ACME,
+        files={"file": ("b.xml", b"<not-closed", "application/xml")},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "parse_failed"
+    assert client.get("/api/v1/store/scans/broken", headers=ACME).status_code == 404
+
+
+def test_a_file_that_was_read_but_understood_as_nothing_is_degraded_not_ok(client):
+    """Rows were read and every one was dropped for want of a recognised title
+    column. Storing that as "ok" tells a client their estate is clean when the
+    file was never really understood."""
+    response = upload(client, "odd", "odd.csv", b"not,a,scan\n1,2,3\n")
+    assert response.status_code == 200
+    assert response.json()["findings"] == 0
+    assert response.json()["scan_status"] == "degraded"
+
+    assert client.get("/api/v1/store/scans/odd", headers=ACME).json()["scan_status"] == "degraded"
+
+
+def test_a_genuinely_empty_export_is_ok_not_degraded(client):
+    """A clean scan is a real result. Flagging it would cry wolf."""
+    response = upload(client, "empty", "e.csv", b"QID,Title,Severity\n")
+    assert response.status_code == 200
+    assert response.json()["scan_status"] == "ok"
+
+
+def test_an_unsupported_format_is_refused(client):
+    response = client.post(
+        "/api/v1/store/scans/x/upload",
+        headers=ACME,
+        files={"file": ("x.exe", b"MZ", "application/octet-stream")},
+    )
+    assert response.status_code == 400
+    assert "unsupported_format" in response.json()["detail"]
+
+
+def test_uploading_requires_a_credential(client):
+    response = client.post(
+        "/api/v1/store/scans/x/upload", files={"file": ("x.csv", b"a", "text/csv")}
+    )
+    assert response.status_code == 401
+
+
+def test_re_uploading_the_same_scan_id_replaces_rather_than_doubles(client):
+    upload(client, "up-1", "export.csv", FIXTURE.read_bytes())
+    first = client.get("/api/v1/store/scans/up-1/findings", headers=ACME).json()["count"]
+    upload(client, "up-1", "export.csv", FIXTURE.read_bytes())
+    second = client.get("/api/v1/store/scans/up-1/findings", headers=ACME).json()["count"]
+    assert first == second
+
+
+def test_a_stored_upload_never_names_the_export_format(client):
+    """`module` is the neutral id `file_ingest`, and the format is carried as a
+    client-safe label. The framework's own ingest modules are called
+    nessus_ingest / zap_ingest / qualys_ingest — vendor names — and a new write
+    path must not add a fourth place they appear."""
+    body = upload(client, "up-1", "export.csv", FIXTURE.read_bytes()).json()
+    assert body["source"] == "Vulnerability Assessment"
+
+    findings = client.get("/api/v1/store/scans/up-1/findings", headers=ACME)
+    assert findings.json()["findings"][0]["module"] == "file_ingest"
+    text = findings.text.lower()
+    for tool in ("nessus", "qualys", "zap", "nmap"):
+        assert tool not in text, f"an export format's name reached the response: {tool}"
+
+
 # ---------------------------------------------------------------------------
 # White-label: an underlying scanner's name must not cross this boundary
 # ---------------------------------------------------------------------------

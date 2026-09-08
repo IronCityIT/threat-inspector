@@ -659,7 +659,7 @@ Ordered by value. Blocked items say what blocks them.
 | 7 | **Enable branch protection on `main`** (§10.2.1) | BLOCKED: repository setting, needs Bill |
 | 8 | Decide `tls_cert_check` third-party disclosure | BLOCKED: product decision |
 | 9 | Decide `utils/remediation.py` gpt2 path | BLOCKED: product decision |
-| 9b | **Move the API's write path onto the store** (`_inspectors` is process-local) | Ready — read path done |
+| 9b | **Move the API's write path onto the store** | ✅ **DONE** — `POST /api/v1/store/scans/{scan_id}/upload` persists |
 | 10 | Re-implement the dashboard security headers off `firebase.json` (§5.2) | Follows the hosting decision |
 | 11 | Cover or remove `src/threat_inspector/cli.py` (0%, declared entry point, unused) | Ready |
 | 12 | RBAC model (§9.3) | BLOCKED: product decision |
@@ -1033,11 +1033,40 @@ in the committed catalog, and in stored records. **Decision for Bill:** rename
 the module ids to neutral ones with a compatibility alias, or keep them and
 enforce the rule at every render site.
 
+### The write path — VERIFIED
+
+`POST /api/v1/store/scans/{scan_id}/upload` parses an uploaded export and
+**persists it**. The difference from `/api/v1/scans/upload` is the whole point:
+that one parses into a process-local dict that survives neither a restart nor a
+second replica; this one writes rows.
+
+Ingest honesty is enforced at three levels, because a corrupt or unread upload
+stored as a clean result is the failure this product keeps finding in its own
+ingestion:
+
+| Upload | Result |
+|---|---|
+| A real export | `200`, findings stored, `scan_status: ok` |
+| A file the parser could not read | **`400`**, with the parser's own reasons; nothing stored |
+| Rows read, nothing recognised (column mismatch) | `200`, 0 findings, **`scan_status: degraded`** |
+| A genuinely empty export | `200`, 0 findings, `scan_status: ok` — a clean scan is a real result |
+| An unsupported extension | `400 unsupported_format` |
+
+The third row needed a parser fix to work at all: the spreadsheet parser
+returned a silent zero for an unrecognised export, exactly as the
+vulnerability-scan CSV parser used to. It now warns with the row count and the
+columns it saw, which is what lets the API grade the ingest `degraded`.
+
+Stored findings carry `module: "file_ingest"` — a neutral id — with the format
+recorded as a client-safe label (`Vulnerability Assessment`) in evidence. A new
+write path must not add a fourth place the vendor-named module ids appear while
+that question is still open (see the white-label note above).
+
 ### Still outstanding on this path
 
-- **The write path is still in-memory.** `POST /api/v1/scans/upload` and
-  `/api/v1/analyze` still use the process-local `_inspectors` dict. Moving them
-  onto the store is the next step on this path and is not blocked.
+- **`/api/v1/analyze` and the legacy upload are still in-memory.** They are the
+  older surface; the store-backed routes are additive beside them. Retiring
+  them is a decision about what the dashboard calls, not a blocked item.
 - **Nothing is wired.** `_consensus-store.yml` still POSTs to `storeScanResults`.
   Repointing it needs the decisions in §3.3 and must keep fail-closed behaviour.
 - **No MariaDB has ever been connected to** from this repository. The DDL is

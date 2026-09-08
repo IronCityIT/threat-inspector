@@ -30,11 +30,14 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from threat_inspector.api.auth import current_tenant
+from threat_inspector.parsers import SUPPORTED_FORMATS, parse_file
 
 log = logging.getLogger("threat_inspector.api.store")
 
@@ -156,6 +159,153 @@ def _finding_dict(finding: Any) -> dict[str, Any]:
         "asset_ip": finding.asset_ip,
         "asset_port": finding.asset_port,
         "evidence": finding.evidence,
+    }
+
+
+# The client-safe category for an uploaded export. The white-label rule means a
+# stored finding must never carry the format's vendor name, so the scanner type
+# is mapped here and the raw type is not stored at all.
+_SOURCE_LABELS = {
+    "qualys": "Vulnerability Assessment",
+    "nessus": "Vulnerability Assessment",
+    "zap": "Web Application Scan",
+    "nmap": "Network Scan",
+}
+
+
+def _source_label(scanner_type: str) -> str:
+    return _SOURCE_LABELS.get((scanner_type or "").lower(), "Security Assessment")
+
+
+def _to_finding(vulnerability, source: str) -> dict[str, Any]:
+    """One parsed vulnerability, in the shape ScanRepository stores.
+
+    `module` is the neutral id `file_ingest` rather than the parser's name.
+    The framework's own ingest modules are called nessus_ingest / zap_ingest /
+    qualys_ingest — vendor names that travel on every finding they produce — and
+    that is recorded in docs/HANDOFF.md as a decision for Bill. A new write path
+    should not add a third convention or a fourth place the names appear, so the
+    format is carried as a client-safe label in evidence instead.
+    """
+    return {
+        "module": "file_ingest",
+        "target": vulnerability.asset_url or vulnerability.asset_ip or vulnerability.asset_name,
+        "severity": vulnerability.severity,
+        "title": vulnerability.title,
+        "detail": vulnerability.description,
+        "cve_id": vulnerability.cve_id,
+        "cvss_score": vulnerability.cvss_score,
+        "asset_ip": vulnerability.asset_ip,
+        "asset_port": vulnerability.asset_port,
+        "evidence": {
+            "source": source,
+            "asset_name": vulnerability.asset_name,
+            "asset_url": vulnerability.asset_url,
+            "cwe_id": vulnerability.cwe_id,
+            "solution": vulnerability.solution,
+        },
+    }
+
+
+def _ingest_status(result) -> str:
+    """How much of the upload was actually understood.
+
+    Storing "ok" for a file the parser read and recognised nothing in is the
+    failure this product keeps finding in its own ingestion: a client shown a
+    clean report for a scan that was never really read.
+
+    The parsers distinguish the two cases already. An ERROR means the file could
+    not be read (rejected above). A WARNING with no findings means it was read
+    and nothing in it was recognised — most often a column mismatch — and that
+    is a degraded ingest, not a clean one.
+    """
+    if result.errors:
+        return "partial"
+    if not result.vulnerabilities:
+        # Warnings tell us it was read but not understood; silence means the
+        # file genuinely had nothing in it, which is a real and clean result.
+        return "degraded" if result.warnings else "ok"
+    return "partial" if result.warnings else "ok"
+
+
+@router.post("/scans/{scan_id}/upload")
+async def upload_scan(
+    scan_id: str,
+    file: UploadFile = File(...),
+    scanner_type: str | None = Query(
+        None, description="Scan format hint (auto-detected if omitted)"
+    ),
+    client_id: str = Depends(current_tenant),
+    repository=Depends(session_factory),
+):
+    """Parse an uploaded scan export and PERSIST it for this tenant.
+
+    The difference from `/api/v1/scans/upload` is the whole point: that one
+    parses into a process-local dict that does not survive a restart and does
+    not work behind a second replica. This one writes rows.
+
+    A parse that produced nothing but errors is a 400, not a stored empty scan:
+    a corrupt upload recorded as a clean result is the failure this product has
+    repeatedly found in its own ingestion, and it must not be reintroduced at
+    the API.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUPPORTED_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported_format: {suffix or '(none)'}",
+        )
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+
+    try:
+        result = parse_file(tmp_path, scanner_type)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"parse_failed: {type(e).__name__}") from e
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if result.errors and not result.vulnerabilities:
+        # The parser said why. Carrying it up is what stops a corrupt upload
+        # from being stored as a successful, empty ingest.
+        raise HTTPException(
+            status_code=400, detail={"error": "parse_failed", "reasons": result.errors}
+        )
+
+    source = _source_label(result.scanner_type)
+    scan_status = _ingest_status(result)
+    payload = {
+        "client_id": client_id,
+        "scan_id": scan_id,
+        "scan_type": "file_ingest",
+        "target": file.filename,
+        "status": "completed",
+        "scan_status": scan_status,
+        "summary": {"total": result.total_count, **result.severity_counts},
+        "diagnostics": {
+            "modules_run": ["file_ingest"],
+            "source": source,
+            "parser_errors": list(result.errors),
+            "parser_warnings": list(result.warnings),
+            "rows_recognised": result.total_count,
+        },
+        "findings": [_to_finding(v, source) for v in result.vulnerabilities],
+    }
+
+    scan = repository.store_scan(payload)
+    repository.commit()
+
+    return {
+        "status": "stored",
+        "client_id": client_id,
+        "scan_id": scan.scan_id,
+        "source": source,
+        "findings": result.total_count,
+        "scan_status": scan_status,
+        "severity_breakdown": result.severity_counts,
+        "warnings": list(result.warnings),
     }
 
 
