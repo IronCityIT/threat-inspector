@@ -229,7 +229,9 @@ output:
   formats: ["html", "json"]
 
 remediation:
-  engine: "local"  # Options: local, ollama, openai, anthropic
+  # "static" uses curated guidance and no model. "ollama" uses a local model you
+  # run yourself, and anything it produces is labelled as generated.
+  engine: "static"  # Options: static, ollama
 
 compliance:
   frameworks: ["pci-dss", "hipaa", "soc2", "nist"]

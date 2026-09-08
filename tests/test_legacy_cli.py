@@ -100,6 +100,37 @@ def test_formats_lists_the_extensions_that_can_be_ingested(runner):
     assert ".csv" in result.output
 
 
+def test_the_generated_config_only_names_engines_that_exist(runner, tmp_path):
+    """`init` used to write `engine: "local"  # Options: local, ollama, openai,
+    anthropic` — a default that meant gpt2, and three options, two of which were
+    implemented nowhere."""
+    import yaml
+
+    runner.invoke(main, ["init", "-o", str(tmp_path)])
+    written = (tmp_path / "config.yaml").read_text()
+    config = yaml.safe_load(written)
+
+    from threat_inspector.utils.remediation import IMPLEMENTED_ENGINES
+
+    assert config["remediation"]["engine"] in IMPLEMENTED_ENGINES
+    for absent in ("openai", "anthropic", "gpt2"):
+        assert absent not in written
+
+
+def test_the_generated_config_loads_without_warnings(runner, tmp_path, caplog):
+    """A config this tool writes must not trip the unrecognised-section warning
+    the loader now emits."""
+    import logging
+
+    from threat_inspector.config import Settings
+
+    runner.invoke(main, ["init", "-o", str(tmp_path)])
+    with caplog.at_level(logging.WARNING):
+        settings = Settings.from_yaml(tmp_path / "config.yaml")
+    assert "unrecognised" not in caplog.text
+    assert settings.compliance_frameworks
+
+
 def test_init_creates_a_project_skeleton(runner, tmp_path):
     result = runner.invoke(main, ["init", "-o", str(tmp_path)])
     assert result.exit_code == 0

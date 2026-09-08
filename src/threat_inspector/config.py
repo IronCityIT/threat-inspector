@@ -45,15 +45,23 @@ class APISettings(BaseSettings):
 
 
 class RemediationSettings(BaseSettings):
-    """AI remediation engine configuration."""
+    """Where remediation guidance comes from.
 
-    engine: str = Field(default="local", alias="REMEDIATION_ENGINE")
+    The default is "static": curated entries plus deterministic generic steps,
+    with no model involved. It used to be "local", which meant gpt2 — see
+    utils/remediation.py for why that is gone.
+
+    The openai/anthropic settings that used to live here are removed. Nothing
+    implemented those engines, so they were configuration for a feature that
+    did not exist — and they carried OPENAI_API_KEY and ANTHROPIC_API_KEY
+    environment aliases, inviting a deployment to hold credentials for a code
+    path that could never use them. Neither name is on the approved secret list
+    in CLAUDE.md either.
+    """
+
+    engine: str = Field(default="static", alias="REMEDIATION_ENGINE")
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
     ollama_model: str = Field(default="llama3", alias="OLLAMA_MODEL")
-    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4", alias="OPENAI_MODEL")
-    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
-    anthropic_model: str = Field(default="claude-3-sonnet-20240229", alias="ANTHROPIC_MODEL")
 
 
 class ReportSettings(BaseSettings):

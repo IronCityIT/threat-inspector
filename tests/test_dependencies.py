@@ -28,7 +28,15 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 # Never required to scan, ingest, or report.
+# Packages that must never be mandatory. torch, transformers, nltk and
+# scikit-learn are no longer installable extras either — the gpt2 remediation
+# path was the only importer of any of them and it is gone — but they stay in
+# this set because the property under test is "the scan pipeline does not import
+# these", and that must hold whether or not they are declared anywhere.
 OPTIONAL_AI_PACKAGES = {"torch", "transformers", "nltk", "scikit-learn", "ollama"}
+
+# What requirements-ai.txt still installs, now that only one importer remains.
+OPTIONAL_AI_DECLARED = {"ollama"}
 
 
 def declared(path: Path) -> set[str]:
@@ -57,7 +65,15 @@ def test_the_optional_stack_is_still_installable():
     """Removed from the default set, not deleted — the feature still exists."""
     optional = ROOT / "requirements-ai.txt"
     assert optional.is_file(), "requirements-ai.txt is missing"
-    assert OPTIONAL_AI_PACKAGES <= declared(optional)
+    assert OPTIONAL_AI_DECLARED <= declared(optional)
+
+
+def test_the_optional_stack_declares_nothing_the_code_cannot_import():
+    """torch, transformers, nltk and scikit-learn were declared here and
+    imported by exactly one thing — the gpt2 remediation path. With that gone,
+    installing them buys a ~1.7 GB supply-chain surface and no feature."""
+    optional = declared(ROOT / "requirements-ai.txt")
+    assert not (optional & {"torch", "transformers", "nltk", "scikit-learn"})
 
 
 def test_requirements_and_pyproject_agree_on_what_is_optional():
