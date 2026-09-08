@@ -170,16 +170,81 @@ class QualysParser(BaseParser):
         )
 
 
+def _cell(row, names: tuple[str, ...], default: str = "") -> str:
+    """First present, non-empty value among `names`, as a clean string.
+
+    pandas reads an empty cell as NaN and `str(NaN)` is "nan", so reading a cell
+    with a bare `str(row.get(...))` puts the literal text "nan" in front of a
+    client. Every read here goes through this.
+    """
+    import pandas as pd
+
+    for name in names:
+        if name not in row:
+            continue
+        value = row.get(name)
+        if pd.notna(value):
+            text = str(value).strip()
+            if text:
+                return text
+    return default
+
+
+def _severity_for_status(status: str) -> str:
+    """A failed control is a finding; a passed one is a record of a pass."""
+    if "fail" in status:
+        return "high"
+    if "warn" in status:
+        return "medium"
+    return "info"
+
+
+def _bucket_for_status(status: str) -> str:
+    if "fail" in status:
+        return "failed"
+    if "warn" in status:
+        return "warning"
+    return "passed"
+
+
 class QualysComplianceParser(BaseParser):
-    """Parser for Qualys compliance scan exports."""
+    """Parser for compliance control exports.
+
+    Three defects lived here, none of which its sibling above has. This parser
+    had no direct tests at all — only routing tests asserting which parser gets
+    SELECTED, never what it produces.
+
+    1. Blank cells reached the client as the literal string "nan". pandas reads
+       an empty cell as NaN, and `str(NaN)` is "nan", so a control with no
+       remediation text was reported with **"nan" as its remediation step**.
+       The sibling parser reads through a NaN-aware helper and has a test named
+       for exactly this; this one used `str(row.get(...))` directly.
+
+    2. An export whose columns are not recognised FABRICATED findings. The title
+       fell back to the literal "Unknown", which is neither empty nor "nan", so
+       every row became a finding called "Unknown" at severity info. Worse than
+       reporting nothing: it invents rows that were never in the file.
+
+    3. Nothing recorded how many controls passed. Every row becomes a
+       ParsedVulnerability, so a 500-control export where 490 passed counts as
+       500 findings. The passes are severity "info" and carry their status, so
+       no data is dropped by keeping them — but a reader needs the breakdown to
+       say "500 controls, 10 failed" rather than "500 findings".
+    """
 
     SCANNER_TYPE = "qualys_compliance"
     SUPPORTED_EXTENSIONS = [".xlsx", ".xlsm", ".csv"]
 
+    # Column the control's name may arrive under, best first.
+    TITLE_COLUMNS = ("Control", "Title")
+
     def parse(self, file_path: Path) -> ParseResult:
-        """Parse a Qualys compliance export file."""
+        """Parse a compliance control export."""
         vulnerabilities = []
         metadata: dict[str, Any] = {"source_file": str(file_path), "scan_type": "compliance"}
+        rows_read = 0
+        columns: list[str] = []
+        status_counts: dict[str, int] = {"failed": 0, "warning": 0, "passed": 0}
 
         try:
             import pandas as pd
@@ -187,43 +252,57 @@ class QualysComplianceParser(BaseParser):
             if file_path.suffix.lower() in [".xlsx", ".xlsm"]:
                 df = pd.read_excel(file_path, engine="openpyxl")
             else:
-                df = pd.read_csv(file_path, encoding="utf-8")
+                # utf-8-sig for the same reason as the sibling parser: defensive
+                # against a BOM, identical to utf-8 when there is none.
+                df = pd.read_csv(file_path, encoding="utf-8-sig")
 
-            metadata["total_rows"] = len(df)
+            columns = [str(c) for c in df.columns]
+            rows_read = len(df)
+            metadata["total_rows"] = rows_read
+            metadata["columns"] = columns
 
             for _, row in df.iterrows():
                 try:
-                    # Compliance findings are treated similarly
-                    title = str(row.get("Control", row.get("Title", "Unknown"))).strip()
-                    if not title or title == "nan":
+                    title = _cell(row, self.TITLE_COLUMNS)
+                    if not title:
+                        # No recognised control name. Skipping is right;
+                        # inventing one called "Unknown" was not.
                         continue
 
-                    status = str(row.get("Status", "")).lower()
-                    # Map compliance status to severity
-                    if "fail" in status:
-                        severity = "high"
-                    elif "warn" in status:
-                        severity = "medium"
-                    else:
-                        severity = "info"
+                    status = _cell(row, ("Status",)).lower()
+                    severity = _severity_for_status(status)
+                    status_counts[_bucket_for_status(status)] += 1
 
-                    vuln = ParsedVulnerability(
-                        title=title,
-                        severity=severity,
-                        description=str(row.get("Description", "")),
-                        asset_name=str(row.get("Asset Name", row.get("Host", ""))),
-                        asset_ip=str(row.get("IP", row.get("Asset IP", ""))),
-                        solution=str(row.get("Remediation", row.get("Solution", ""))),
-                        scanner_severity=status,
-                        raw_data=row.to_dict(),
+                    vulnerabilities.append(
+                        ParsedVulnerability(
+                            title=title,
+                            severity=severity,
+                            description=_cell(row, ("Description",)),
+                            asset_name=_cell(row, ("Asset Name", "Host")),
+                            asset_ip=_cell(row, ("IP", "Asset IP")),
+                            solution=_cell(row, ("Remediation", "Solution")),
+                            scanner_severity=status,
+                            raw_data=row.to_dict(),
+                        )
                     )
-                    vulnerabilities.append(vuln)
 
                 except Exception as e:
                     self.add_warning(f"Error parsing compliance row: {e}")
 
         except Exception as e:
             self.add_error(f"Failed to parse Qualys compliance file: {e}")
+
+        metadata["control_status_counts"] = status_counts
+
+        # Rows read and nothing recognised is the shape a column mismatch takes.
+        # It used to produce a finding per row titled "Unknown"; now it produces
+        # nothing, so it has to say so.
+        if rows_read and not vulnerabilities and not self.errors:
+            self.add_warning(
+                f"{rows_read} row(s) read but none carried a recognised control column; "
+                f"looked for {', '.join(self.TITLE_COLUMNS)}; "
+                f"columns present: {', '.join(columns) if columns else 'none'}"
+            )
 
         return ParseResult(
             scanner_type=self.SCANNER_TYPE,
