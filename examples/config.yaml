@@ -40,19 +40,6 @@ compliance:
     - "soc2"
     - "nist"
 
-# Scanner-specific settings
-scanners:
-  qualys:
-    # Column name mappings if your exports use different names
-    column_mappings:
-      title: "Vulnerability Title"
-      severity: "Severity"
-      asset_ip: "IP"
-  
-  zap:
-    # Minimum confidence level to include
-    min_confidence: "medium"
-
 # Logging
 logging:
   level: "INFO"
