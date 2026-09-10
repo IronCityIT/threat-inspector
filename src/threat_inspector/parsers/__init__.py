@@ -54,6 +54,40 @@ SUPPORTED_FORMATS = {
 }
 
 
+# A compliance control export names its control column; a vulnerability export
+# names a title/QID one. Both arrive as .csv and .xlsx, and content detection
+# used to distinguish only "vulnerability scan" from "spreadsheet", so a
+# compliance export was routed to the VULNERABILITY parser unless its FILENAME
+# happened to contain "compliance". The same file, renamed, produced 5 findings
+# or 0:
+#
+#     controls.csv                 -> qualys_ingest            -> 0 findings
+#     qualys-compliance-export.csv -> qualys_compliance_ingest -> 5 findings
+#
+# A client should not have to name a file a particular way to have it read.
+_COMPLIANCE_HEADER_HINTS = ("control",)
+
+
+def _looks_like_compliance(columns: list[str]) -> bool:
+    """Does this header describe control results rather than vulnerabilities?"""
+    lowered = [str(c).strip().lower() for c in columns]
+    return any(hint in column for column in lowered for hint in _COMPLIANCE_HEADER_HINTS)
+
+
+def _spreadsheet_columns(file_path: Path) -> list[str]:
+    """Header row of a spreadsheet, or [] if it cannot be read.
+
+    Selection must never fail because a file is corrupt — that is the parser's
+    job to report, with the reason.
+    """
+    try:
+        import pandas as pd
+
+        return [str(c) for c in pd.read_excel(file_path, engine="openpyxl", nrows=0).columns]
+    except Exception:
+        return []
+
+
 def get_parser(file_path: Path, scanner_type: str | None = None) -> BaseParser | None:
     """
     Get the appropriate parser for a file.
@@ -126,7 +160,9 @@ def get_parser(file_path: Path, scanner_type: str | None = None) -> BaseParser |
 
     # Fall back to extension-based detection
     if extension in [".xlsx", ".xlsm"]:
-        # Default Excel files to Qualys
+        if _looks_like_compliance(_spreadsheet_columns(file_path)):
+            return QualysComplianceParser()
+        # Default Excel files to the vulnerability spreadsheet parser.
         return QualysParser()
 
     if extension == ".xml":
@@ -161,6 +197,8 @@ def get_parser(file_path: Path, scanner_type: str | None = None) -> BaseParser |
 
             if "plugin" in header or "nessus" in header:
                 return NessusParser()
+            if _looks_like_compliance(header.split(",")):
+                return QualysComplianceParser()
             # Default CSV to Qualys
             return QualysParser()
         except Exception:
