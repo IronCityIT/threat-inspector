@@ -5,18 +5,31 @@ Accepts single values, comma lists, or files. Classifies each into a kind
 (ip, url, domain, hostname), expands CIDR to individual IPs, dedupes, and
 validates. This is what fixes "enter in ips urls etc" — one parser, every tool.
 
-Two hard rules live here, because this is the only place a caller-supplied string
+The hard rules live here, because this is the only place a caller-supplied string
 becomes something a module will connect to:
 
   * URL targets are restricted to http/https. Modules hand target.value straight
     to urllib, which also speaks file://, ftp:// and (via handlers) more. A
     `file://localhost/etc/passwd` target used to classify as a perfectly valid
     URL and would have been fetched as a local file read.
-  * Loopback and link-local addresses are rejected unless explicitly allowed.
-    169.254.169.254 is the cloud instance-metadata endpoint; a scan running on a
-    hosted runner must not be steerable into reading its own credentials.
-    RFC1918 space is deliberately still allowed — scanning a client's internal
-    range is the product's actual job.
+  * Loopback, link-local and unspecified addresses are rejected unless explicitly
+    allowed. 169.254.169.254 is the cloud instance-metadata endpoint; a scan
+    running on a hosted runner must not be steerable into reading its own
+    credentials. 0.0.0.0 and :: connect to the local machine. RFC1918 space is
+    deliberately still allowed — scanning a client's internal range is the
+    product's actual job.
+  * The guard recognises every spelling the resolver does, not just the dotted
+    quad. getaddrinfo() hands inet_aton() forms straight to connect(), so
+    "0x7f000001", "2130706433", "127.1" and "0177.0.0.1" all reach 127.0.0.1,
+    and an IPv4-mapped IPv6 literal ("::ffff:127.0.0.1") reaches its inner
+    address on a dual-stack socket. Those spellings are canonicalised to the
+    address they denote before the guard runs, so what is checked is what is
+    scanned.
+  * A range wider than a /16 is refused before expansion. Expansion is eager —
+    every address becomes a Target before a module runs — so an unbounded range
+    is a hang (2001:db8::/64 never returns) or an out-of-memory (a /8 is sixteen
+    million objects). The refusal says how to proceed instead of trying and
+    never answering.
 
 Bad input yields a TargetError carrying a human-readable reason, never a bare
 library traceback. parse_targets_report() collects those per token so one typo in
@@ -26,13 +39,15 @@ a 500-line targets file does not discard the other 499.
 from __future__ import annotations
 
 import ipaddress
+import re
+import socket
 from dataclasses import dataclass, field
 from typing import cast
 from urllib.parse import urlparse
 
 # ip_network is generic over its address family; naming the union keeps the guard
 # signatures concrete (a bare _BaseAddress exposes neither is_loopback nor
-# is_link_local, which are the two properties the guard exists to read).
+# is_link_local nor is_unspecified, the properties the guard exists to read).
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 # Schemes a scan module may be pointed at. Anything else is refused outright.
@@ -40,6 +55,15 @@ ALLOWED_SCHEMES = ("http", "https")
 
 # Hostnames that resolve to the local machine. Blocked with the loopback range.
 _LOCAL_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+
+# Widest range a single token may expand to: one IPv4 /16. Anything larger is
+# refused up front (see the module docstring).
+MAX_RANGE_ADDRESSES = 65_536
+
+# Only tokens made of these characters are offered to inet_aton(). It is a gate,
+# not the parser: glibc's inet_aton() tolerates trailing junk after whitespace,
+# and a hostname like "web-1" must never be handed to it at all.
+_ATON_CANDIDATE = re.compile(r"[0-9a-fA-FxX.]+")
 
 
 class TargetError(ValueError):
@@ -61,9 +85,39 @@ class TargetReport:
     errors: list[str] = field(default_factory=list)
 
 
+def _ip_literal(host: str) -> IPAddress | None:
+    """The address `host` denotes as a literal, or None if it is a name.
+
+    Beyond the dotted quad and RFC 4291 forms ipaddress knows, this accepts the
+    inet_aton() spellings the resolver treats as literals: decimal, hex, octal
+    and short dotted forms. Every such token is canonicalised, so the guard and
+    the scanner agree on which address is meant.
+    """
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    if not _ATON_CANDIDATE.fullmatch(host):
+        return None
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None  # looks numeric but is not an address: "1e10", "0x", "123abc"
+    return ipaddress.IPv4Address(packed)
+
+
 def _check_ip(ip: IPAddress, token: str, allow_local: bool) -> None:
     if allow_local:
         return
+    # An IPv4-mapped IPv6 literal reaches its inner address, and on 3.12
+    # ::ffff:127.0.0.1 does not report is_loopback — judge the inner address.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_unspecified:
+        raise TargetError(
+            f"{token!r} is the unspecified address, which connects to the local "
+            "machine; pass --allow-local to scan it"
+        )
     if ip.is_loopback:
         raise TargetError(f"{token!r} is a loopback address; pass --allow-local to scan it")
     if ip.is_link_local:
@@ -90,10 +144,7 @@ def _check_url(token: str, allow_local: bool) -> Target:
     # the _check_ip call in `except ValueError` would swallow the very rejection
     # it is there to raise — which is exactly how a metadata-endpoint URL slipped
     # through the first cut of this guard.
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        literal = None  # a name, not a literal IP — nothing more to check here
+    literal = _ip_literal(host)
     if literal is not None:
         _check_ip(literal, token, allow_local)
     return Target(raw=token, kind="url", value=token)
@@ -114,6 +165,12 @@ def _classify(token: str, allow_local: bool = False) -> list[Target]:
             net = ipaddress.ip_network(token, strict=False)
         except ValueError as e:
             raise TargetError(f"{token!r} is not a valid network range: {e}") from e
+        if net.num_addresses > MAX_RANGE_ADDRESSES:
+            raise TargetError(
+                f"{token!r} spans {net.num_addresses:,} addresses; a single range "
+                f"may expand to at most {MAX_RANGE_ADDRESSES:,} (an IPv4 /16). "
+                "Split it into smaller ranges or list the hosts in a targets file."
+            )
         # .hosts() is empty for a single-address network (/32, /128), which must
         # still resolve to that one address rather than to nothing at all.
         hosts: list[IPAddress] = list(net.hosts()) or [cast(IPAddress, net.network_address)]
@@ -121,14 +178,11 @@ def _classify(token: str, allow_local: bool = False) -> list[Target]:
             _check_ip(ip, token, allow_local)
         return [Target(raw=token, kind="ip", value=str(ip)) for ip in hosts]
 
-    # Bare IP
-    try:
-        ip = ipaddress.ip_address(token)
-    except ValueError:
-        pass
-    else:
-        _check_ip(ip, token, allow_local)
-        return [Target(raw=token, kind="ip", value=str(ip))]
+    # Bare IP, in any spelling the resolver would treat as a literal
+    literal = _ip_literal(token)
+    if literal is not None:
+        _check_ip(literal, token, allow_local)
+        return [Target(raw=token, kind="ip", value=str(literal))]
 
     # A bare scheme-less token must still look like a host, not a URL fragment
     # or a stray shell argument. "javascript:alert(1)" used to sail through as a
