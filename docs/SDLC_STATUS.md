@@ -259,9 +259,17 @@ Third pass:
 
 - **URL scheme allowlist** (http/https) enforced in `targets.py` *and* re-checked
   in the fetch helpers, because modules build URLs themselves (`base + "/admin"`).
-- **Loopback / link-local refused by default**, `--allow-local` to opt back in.
-  RFC1918 is deliberately still scannable — a client's internal range is the
-  product's actual job.
+- **Loopback / link-local / unspecified refused by default**, `--allow-local` to
+  opt back in. RFC1918 is deliberately still scannable — a client's internal range
+  is the product's actual job. *Corrected 2026-09-17:* until then the guard only
+  recognised the dotted quad, so `0x7f000001`, `2130706433`, `127.1`,
+  `0177.0.0.1`, `::ffff:127.0.0.1` and `0.0.0.0` all passed it and reached the
+  local machine — every spelling the resolver hands to `connect()` is now
+  canonicalised before the check runs.
+- **A range wider than a /16 is refused before expansion.** Expansion is eager, so
+  `2001:db8::/64` used to hang the scan for its full timeout and `10.0.0.0/8`
+  would have built sixteen million objects. The refusal names the limit and says
+  to split the range.
 - **Authenticated ingest.** `storeScanResults` requires a bearer token compared
   in constant time (`crypto.timingSafeEqual`), and is **secure by default**: with
   no token configured it returns 503 rather than accepting anonymous writes.
