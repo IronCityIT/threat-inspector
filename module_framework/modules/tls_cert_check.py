@@ -130,6 +130,14 @@ _VERIFY_FAILURES = (
         "The certificate does not cover this hostname, so clients refuse the connection.",
     ),
     (
+        # OpenSSL's wording when the target is an IP. A bare IP target is
+        # addressed to this check as https://<ip>, so this is what most IP
+        # targets produce. It used to fall through to the generic message.
+        "ip address mismatch",
+        "high",
+        "The certificate does not cover this IP address, so clients refuse the connection.",
+    ),
+    (
         "self-signed certificate",
         "high",
         "The certificate is self-signed, so no client trusts it without manual configuration.",
@@ -173,7 +181,8 @@ def untrusted_finding(reason: str, host: str) -> list[Finding]:
             target=host,
             severity=severity,
             title="Certificate failed validation",
-            detail=f"{detail} Reported as: {reason}.",
+            # OpenSSL ends its message with a full stop; do not double it.
+            detail=f"{detail} Reported as: {reason.rstrip('.')}.",
             evidence={"verification_error": reason},
         )
     ]
