@@ -41,7 +41,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import cast
 from urllib.parse import urlparse
 
@@ -75,6 +75,48 @@ class Target:
     raw: str  # what the user typed
     kind: str  # one of: ip, url, domain, hostname
     value: str  # normalized value (ip string, url, or host)
+
+    def as_url(self) -> Target:
+        """This target addressed as a URL.
+
+        A web capability needs a URL, but an operator types a bare domain — that
+        is the natural thing to enter, and this parser deliberately accepts it.
+        Deriving https://<host> is what lets one parser serve every capability,
+        instead of url-only ones quietly declining every domain they are handed.
+        """
+        if self.kind == "url":
+            return self
+        host = f"[{self.value}]" if self.kind == "ip" and ":" in self.value else self.value
+        return Target(raw=self.raw, kind="url", value=f"https://{host}")
+
+    def as_host(self) -> Target:
+        """This target addressed as the host it names, classified as the parser
+        would classify that host on its own (ip, domain or hostname).
+
+        The mirror of as_url: a port scanner needs a host, and an operator who
+        typed https://example.com:8443/login meant that host.
+        """
+        if self.kind != "url":
+            return self
+        host = cast(str, urlparse(self.value).hostname)  # a url Target always has one
+        # The URL already passed the local-address guard, so its host has too.
+        return replace(_classify(host, allow_local=True)[0], raw=self.raw)
+
+    def addressed_for(self, kinds: tuple[str, ...]) -> Target | None:
+        """This target in a shape among `kinds`, or None if no shape fits.
+
+        Reshaping is a change of address, never of identity: `raw` is preserved so
+        a finding still points at what the operator entered.
+        """
+        if self.kind in kinds:
+            return self
+        if "url" in kinds:
+            return self.as_url()
+        if self.kind == "url":
+            host = self.as_host()
+            if host.kind in kinds:
+                return host
+        return None
 
 
 @dataclass
