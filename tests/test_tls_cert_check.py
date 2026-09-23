@@ -246,7 +246,12 @@ def test_a_certificate_for_another_host_is_reported(trust_the_ca, tls_listener):
     result = inspect_tls(HOST, port=tls_listener(cert, key))
     assert result.reachable is True
     assert result.verified is False
-    assert untrusted_finding(result.reason, HOST) != []
+    finding = untrusted_finding(result.reason, HOST)[0]
+    # HOST is an IP, so OpenSSL says "IP address mismatch", not "Hostname
+    # mismatch". Since a bare IP target now reaches this check as https://<ip>,
+    # this is the wording most IP targets produce, so it must be read correctly.
+    assert "does not cover" in finding.detail
+    assert ".." not in finding.detail
 
 
 def test_a_self_signed_certificate_is_reported(tls_listener, tmp_path):
@@ -377,7 +382,8 @@ def test_the_port_comes_from_the_target_when_it_names_one(value, kind, expected)
         ("certificate has expired", "critical"),
         ("certificate revoked", "critical"),
         ("certificate is not yet valid", "high"),
-        ("Hostname mismatch, certificate is not valid for '127.0.0.1'", "high"),
+        ("Hostname mismatch, certificate is not valid for 'example.com'", "high"),
+        ("IP address mismatch, certificate is not valid for '127.0.0.1'.", "high"),
         ("self-signed certificate", "high"),
         ("self signed certificate in certificate chain", "high"),
         ("unable to get local issuer certificate", "high"),
@@ -386,6 +392,21 @@ def test_the_port_comes_from_the_target_when_it_names_one(value, kind, expected)
 )
 def test_each_verification_failure_maps_to_a_severity(reason, expected):
     assert untrusted_finding(reason, HOST)[0].severity == expected
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Hostname mismatch, certificate is not valid for 'example.com'.",
+        "IP address mismatch, certificate is not valid for '127.0.0.1'.",
+    ],
+)
+def test_a_certificate_that_does_not_cover_the_address_says_so(reason):
+    """Both wordings name the same condition. The IP one used to fall through
+    to the generic "could not be validated", which gives the client nothing to act on."""
+    detail = untrusted_finding(reason, HOST)[0].detail
+    assert detail.startswith("The certificate does not cover this ")
+    assert not detail.endswith(".."), "OpenSSL's own full stop must not be doubled"
 
 
 def test_the_raw_verification_message_is_kept_as_evidence():
