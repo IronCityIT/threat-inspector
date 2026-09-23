@@ -211,12 +211,40 @@ def main(argv: list[str] | None = None) -> int:
     # run stops exactly here — after targets and selection have been validated for
     # real, before anything reaches a live host. Emitting an empty findings set is
     # the honest result: nothing was scanned, so nothing was found.
+    executed: set[str] = set()
     if not args.dry_run:
         for t in targets:
             for m in mods:
-                if not m.applies_to(t.kind):
-                    log.debug("skip %s on %s (kind %s not supported)", m.name, t.value, t.kind)
+                # A capability is handed the target in the shape it works on: a
+                # web check gets https://<host> for a bare domain, a port scan
+                # gets the host of a URL. Before this, a url-only module handed
+                # "example.com" was skipped with a debug log and the run still
+                # reported "ok" with that module listed as run — a clean result
+                # for a check that never happened. When no shape fits (a
+                # subdomain enumeration on an IP), say so in the record.
+                shaped = t.addressed_for(m.target_kinds)
+                if shaped is None:
+                    log.warning(
+                        "skip %s on %s: capability assesses %s targets, target is a %s",
+                        m.name,
+                        t.value,
+                        "/".join(m.target_kinds),
+                        t.kind,
+                    )
+                    skipped.append(
+                        {
+                            "module": m.name,
+                            "target": t.value,
+                            "reason": (
+                                f"capability assesses {'/'.join(m.target_kinds)} targets; "
+                                f"{t.value} is a {t.kind}"
+                            ),
+                        }
+                    )
                     continue
+                # `t` stays the operator's target: the next module in this loop
+                # reshapes from the original, not from what this one was handed
+                # (a URL re-derived from its host would have lost port and path).
 
                 # A module whose external scanner is not installed used to run,
                 # get None back from run_cmd, and return an empty list — which
@@ -236,7 +264,8 @@ def main(argv: list[str] | None = None) -> int:
                     skipped.append({"module": m.name, "target": t.value, "missing": missing})
                     continue
 
-                got, err, elapsed = run_module(m, t, ctx, args.module_timeout)
+                got, err, elapsed = run_module(m, shaped, ctx, args.module_timeout)
+                executed.add(m.name)
                 findings.extend(f.to_dict() for f in got)
                 timings.append(
                     {
@@ -276,8 +305,9 @@ def main(argv: list[str] | None = None) -> int:
     elif attempted and failed == attempted:
         status = "failed"
     elif not attempted and skipped:
-        # Nothing ran at all, and the reason was missing tooling rather than
-        # crashes. Not "ok", and not "failed" either — nothing was attempted.
+        # Nothing ran at all, and the reason was missing tooling or a target no
+        # selected capability can assess, rather than crashes. Not "ok": nothing
+        # was attempted, so nothing was found.
         status = "failed"
     elif failed:
         status = "partial"
@@ -304,7 +334,10 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "client": args.client,
                 "scan_id": args.scan_id,
-                "modules_run": [m.name for m in mods],
+                # What actually executed, not what was selected: a module in
+                # `skipped` must not also be listed as run. A dry run executes
+                # nothing by design, so the selection is the honest answer there.
+                "modules_run": [m.name for m in mods] if args.dry_run else sorted(executed),
                 "target_count": len(targets),
                 "dry_run": args.dry_run,
                 "status": status,

@@ -117,11 +117,123 @@ def test_stats_account_for_every_module_run(stub_registry, capsys):
     assert [t["ok"] for t in stats["timings"] if t["module"] == "noisy"] == [True]
 
 
-def test_modules_that_do_not_apply_to_a_target_kind_are_skipped(stub_registry, capsys):
+# ---- target shape vs module shape ------------------------------------------
+#
+# A selected capability must never vanish silently. Before this, a url-only
+# module handed "example.com" — the obvious thing for an operator to type — was
+# skipped with a debug log, `modules_run` still listed it, and the run said "ok"
+# with zero findings. That is byte-identical to a clean result. The same held in
+# the other direction: a host-kind module handed "https://example.com" never ran.
+
+
+class HostOnly(ScanModule):
+    name = "host_only"
+    description = "Only handles hosts, like a port scanner."
+    target_kinds = ("ip", "domain", "hostname")
+    groups = ("quick",)
+
+    def run(self, target, ctx):
+        return [
+            Finding(
+                module="host_only",
+                target=target.value,
+                severity="info",
+                title=f"kind={target.kind}",
+            )
+        ]
+
+
+class DomainOnly(ScanModule):
+    name = "domain_only"
+    description = "Wants a registrable domain, like subdomain enumeration."
+    target_kinds = ("domain",)
+    groups = ("quick",)
+
+    def run(self, target, ctx):
+        return []
+
+
+@pytest.mark.parametrize(
+    ("token", "url"),
+    [
+        ("example.com", "https://example.com"),
+        ("web-1", "https://web-1"),
+        ("192.168.1.10", "https://192.168.1.10"),
+        ("2001:db8::10", "https://[2001:db8::10]"),
+    ],
+)
+def test_a_url_only_module_runs_against_a_bare_host_addressed_as_a_url(
+    stub_registry, capsys, token, url
+):
     stub_registry(UrlOnly())
-    _, doc = run_cli(capsys, ["--modules", "url_only", "--targets", "example.com"])
-    assert doc["stats"]["module_runs"] == 0
+    _, doc = run_cli(capsys, ["--modules", "url_only", "--targets", token])
     assert doc["status"] == "ok"
+    assert doc["stats"]["module_runs"] == 1
+    assert [f["target"] for f in doc["findings"]] == [url]
+    assert doc["skipped"] == []
+
+
+@pytest.mark.parametrize(
+    ("token", "value", "kind"),
+    [
+        ("https://example.com/login", "example.com", "domain"),
+        ("http://web-1:8080/", "web-1", "hostname"),
+        ("https://192.168.1.10:8443/", "192.168.1.10", "ip"),
+        ("https://[2001:db8::10]/", "2001:db8::10", "ip"),
+    ],
+)
+def test_a_host_module_runs_against_the_host_of_a_url(stub_registry, capsys, token, value, kind):
+    stub_registry(HostOnly())
+    _, doc = run_cli(capsys, ["--modules", "host_only", "--targets", token])
+    assert doc["status"] == "ok"
+    assert doc["stats"]["module_runs"] == 1
+    assert doc["findings"][0]["target"] == value
+    assert doc["findings"][0]["title"] == f"kind={kind}"
+
+
+def test_a_module_that_genuinely_cannot_address_the_target_is_reported_not_silent(
+    stub_registry, capsys
+):
+    """A domain-only capability given a hostname: no shape fits, so say so."""
+    stub_registry(DomainOnly(), Noisy())
+    _, doc = run_cli(capsys, ["--modules", "domain_only,noisy", "--targets", "web-1"])
+    assert doc["stats"]["module_runs"] == 1
+    assert doc["modules_run"] == ["noisy"], "a module that never ran is not reported as run"
+    assert doc["skipped"] == [
+        {
+            "module": "domain_only",
+            "target": "web-1",
+            "reason": "capability assesses domain targets; web-1 is a hostname",
+        }
+    ]
+    # Every capability that ran ran cleanly, but one selected capability did
+    # not run at all — that is "degraded", exactly as for a missing scanner.
+    assert doc["status"] == "degraded"
+
+
+def test_a_skip_for_shape_never_names_an_underlying_tool(stub_registry, capsys):
+    stub_registry(DomainOnly())
+    _, doc = run_cli(capsys, ["--modules", "domain_only", "--targets", "10.0.0.1"])
+    assert "missing" not in doc["skipped"][0]
+    assert doc["status"] == "failed", "nothing ran; that is not a clean scan"
+
+
+def test_modules_run_is_what_executed_not_what_was_selected(stub_registry, capsys):
+    stub_registry(DomainOnly(), HostOnly(), UrlOnly())
+    _, doc = run_cli(
+        capsys, ["--modules", "domain_only,host_only,url_only", "--targets", "example.com,web-1"]
+    )
+    assert doc["modules_run"] == ["domain_only", "host_only", "url_only"]
+    assert doc["stats"]["module_runs"] == 5
+    assert [(s["module"], s["target"]) for s in doc["skipped"]] == [("domain_only", "web-1")]
+    assert doc["status"] == "degraded"
+
+
+def test_a_dry_run_still_reports_the_selection_as_modules_run(stub_registry, capsys):
+    stub_registry(DomainOnly(), Noisy())
+    _, doc = run_cli(capsys, ["--modules", "domain_only,noisy", "--targets", "web-1", "--dry-run"])
+    assert doc["modules_run"] == ["domain_only", "noisy"]
+    assert doc["skipped"] == []
 
 
 # ---- input handling -----------------------------------------------------
@@ -177,3 +289,35 @@ def test_list_modules_emits_the_catalog(stub_registry, capsys):
     assert code == 0
     assert [m["name"] for m in doc["modules"]] == ["noisy"]
     assert "quick" in doc["groups"]
+
+
+def test_reshaping_for_one_module_does_not_change_what_the_next_module_sees(stub_registry, capsys):
+    """The operator typed a URL with a port and a path. A host module is handed
+    the host; the URL module after it must still get the whole URL — not a URL
+    re-derived from the host, which would have lost `:8443/login`."""
+    stub_registry(HostOnly(), UrlOnly())
+    _, doc = run_cli(
+        capsys,
+        ["--modules", "host_only,url_only", "--targets", "https://example.com:8443/login"],
+    )
+    assert doc["status"] == "ok"
+    assert {f["module"]: f["target"] for f in doc["findings"]} == {
+        "host_only": "example.com",
+        "url_only": "https://example.com:8443/login",
+    }
+
+
+def test_a_reshaped_target_still_names_what_the_operator_entered():
+    """Reshaping is a change of address, never of identity."""
+    from targets import Target
+
+    url = Target(
+        raw="HTTPS://Example.com:8443/login", kind="url", value="https://example.com:8443/login"
+    )
+    host = url.addressed_for(("ip", "domain", "hostname"))
+    assert host is not None
+    assert host.raw == "HTTPS://Example.com:8443/login"
+    assert (host.kind, host.value) == ("domain", "example.com")
+
+    domain = Target(raw="Example.COM", kind="domain", value="example.com")
+    assert domain.as_url().raw == "Example.COM"
