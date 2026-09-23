@@ -176,6 +176,23 @@ def test_a_safe_referrer_policy_passes():
     assert evaluate({"Referrer-Policy": "strict-origin-when-cross-origin"}) == []
 
 
+def test_a_referrer_fallback_list_is_judged_by_the_token_the_browser_uses():
+    """Browsers apply the LAST token they recognise. A leading unsafe-url is the
+    legacy fallback; the modern policy after it is the one in force."""
+    assert evaluate({"Referrer-Policy": "unsafe-url, strict-origin-when-cross-origin"}) == []
+
+
+def test_an_unrecognised_trailing_token_does_not_hide_unsafe_url():
+    finding = only(evaluate({"Referrer-Policy": "unsafe-url, not-a-policy"}))
+    assert "unsafe-url" in finding.evidence["reason"]
+
+
+def test_a_referrer_policy_with_no_recognised_token_is_flagged():
+    """Nothing recognised means the browser default applies — same as empty."""
+    finding = only(evaluate({"Referrer-Policy": "same-orign"}))
+    assert finding.evidence["state"] == "ineffective"
+
+
 @pytest.mark.parametrize("token", ["'unsafe-inline'", "'unsafe-eval'"])
 def test_a_policy_that_re_allows_injected_script_is_flagged(token):
     finding = only(evaluate({"Content-Security-Policy": f"default-src 'self'; script-src {token}"}))
