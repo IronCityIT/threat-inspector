@@ -80,13 +80,38 @@ def _check_content_type_options(value: str) -> tuple[str, str] | None:
     return (f"{value.strip()!r} is not 'nosniff', so MIME-sniffing is not disabled", "low")
 
 
+# The policy tokens a browser understands (W3C Referrer Policy).
+_REFERRER_POLICIES = frozenset(
+    {
+        "no-referrer",
+        "no-referrer-when-downgrade",
+        "same-origin",
+        "origin",
+        "strict-origin",
+        "origin-when-cross-origin",
+        "strict-origin-when-cross-origin",
+        "unsafe-url",
+    }
+)
+
+
 def _check_referrer_policy(value: str) -> tuple[str, str] | None:
-    """unsafe-url sends the full URL, path and query included, to any origin."""
+    """unsafe-url sends the full URL, path and query included, to any origin.
+
+    A comma-separated list is a fallback chain: the browser applies the LAST
+    token it recognises and ignores the rest. So `unsafe-url, strict-origin-...`
+    is safe, and a value with no recognised token at all is the same as none.
+    """
     tokens = [t.strip().lower() for t in value.split(",") if t.strip()]
     if not tokens:
         return ("the header is empty, so the browser default applies", "low")
-    # The last token a browser recognises is the one it uses.
-    if "unsafe-url" in tokens:
+    recognised = [t for t in tokens if t in _REFERRER_POLICIES]
+    if not recognised:
+        return (
+            f"{value.strip()!r} is not a recognised policy, so the browser default applies",
+            "low",
+        )
+    if recognised[-1] == "unsafe-url":
         return ("'unsafe-url' sends the full URL, including path and query, cross-origin", "low")
     return None
 
