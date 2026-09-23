@@ -197,6 +197,67 @@ def test_a_restrictive_policy_passes():
     assert evaluate({"Content-Security-Policy": "default-src 'none'; script-src 'self'"}) == []
 
 
+# The CSP check used to search the WHOLE policy text for 'unsafe-inline'. Two
+# widely deployed, correct configurations were reported to the client as
+# "permits injected script", and one that restricts no script at all passed.
+
+
+def test_unsafe_inline_for_styles_is_not_a_script_weakness():
+    """`style-src 'unsafe-inline'` is everywhere; it permits no script at all."""
+    policy = "default-src 'self'; style-src 'self' 'unsafe-inline'"
+    assert evaluate({"Content-Security-Policy": policy}) == []
+
+
+@pytest.mark.parametrize(
+    "script_src",
+    [
+        "'nonce-r4nd0m' 'unsafe-inline'",
+        "'sha256-B2yPHKaXnvFWtRChIbabYmUBFZdVfKKXHbWtWidDVF8=' 'unsafe-inline'",
+        "'nonce-r4nd0m' 'strict-dynamic' 'unsafe-inline' https:",
+    ],
+)
+def test_unsafe_inline_beside_a_nonce_or_hash_is_ignored_by_browsers(script_src):
+    """CSP2+: a nonce or hash switches 'unsafe-inline' off. It is only there as a
+    fallback for browsers too old to understand nonces — the recommended pattern."""
+    policy = f"default-src 'self'; script-src {script_src}"
+    assert evaluate({"Content-Security-Policy": policy}) == []
+
+
+def test_unsafe_eval_is_not_neutralised_by_a_nonce():
+    finding = only(evaluate({"Content-Security-Policy": "script-src 'nonce-r4nd0m' 'unsafe-eval'"}))
+    assert "'unsafe-eval'" in finding.detail
+    assert "'unsafe-inline'" not in finding.detail
+
+
+def test_default_src_governs_script_when_script_src_is_absent():
+    finding = only(evaluate({"Content-Security-Policy": "default-src 'self' 'unsafe-inline'"}))
+    assert "'unsafe-inline'" in finding.detail
+
+
+def test_script_src_overrides_a_weak_default_src():
+    policy = "default-src 'self' 'unsafe-inline'; script-src 'self'"
+    assert evaluate({"Content-Security-Policy": policy}) == []
+
+
+@pytest.mark.parametrize("policy", ["frame-ancestors 'none'", "upgrade-insecure-requests"])
+def test_a_policy_that_restricts_no_script_is_flagged(policy):
+    """Without script-src or default-src, CSP places no limit on script at all."""
+    finding = only(evaluate({"Content-Security-Policy": policy}))
+    assert finding.evidence["state"] == "ineffective"
+    assert "script" in finding.evidence["reason"]
+
+
+def test_directive_names_are_case_insensitive():
+    finding = only(evaluate({"Content-Security-Policy": "Script-Src 'self' 'UNSAFE-INLINE'"}))
+    assert "'unsafe-inline'" in finding.detail
+
+
+def test_a_second_policy_that_blocks_inline_script_still_protects():
+    """Several policies are all enforced; a script must satisfy every one."""
+    policy = "script-src 'self' 'unsafe-inline', script-src 'self'"
+    assert evaluate({"Content-Security-Policy": policy}) == []
+
+
 def test_an_ineffective_header_records_the_value_that_was_seen():
     """A reader has to be able to check the judgement without rescanning."""
     finding = only(evaluate({"X-Frame-Options": "ALLOWALL"}))

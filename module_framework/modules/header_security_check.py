@@ -91,10 +91,55 @@ def _check_referrer_policy(value: str) -> tuple[str, str] | None:
     return None
 
 
+def _script_sources(policy: str) -> list[str] | None:
+    """The source list that governs script in ONE policy, or None if nothing does.
+
+    script-src wins; default-src is its fallback; with neither, CSP places no
+    limit on script at all. A repeated directive is ignored after its first
+    occurrence, as browsers do.
+    """
+    directives: dict[str, list[str]] = {}
+    for part in policy.split(";"):
+        tokens = part.strip().lower().split()
+        if tokens:
+            directives.setdefault(tokens[0], tokens[1:])
+    return directives.get("script-src", directives.get("default-src"))
+
+
+def _allows_inline(sources: list[str]) -> bool:
+    """CSP2+: a nonce, a hash or 'strict-dynamic' makes browsers ignore
+    'unsafe-inline'. Pairing them is the recommended fallback for old browsers,
+    not a weakness."""
+    if "'unsafe-inline'" not in sources:
+        return False
+    neutralisers = ("'nonce-", "'sha256-", "'sha384-", "'sha512-", "'strict-dynamic'")
+    return not any(s.startswith(neutralisers) for s in sources)
+
+
 def _check_csp(value: str) -> tuple[str, str] | None:
-    """A policy that re-allows inline script gives up most of what CSP is for."""
-    policy = value.lower()
-    weaknesses = [token for token in ("'unsafe-inline'", "'unsafe-eval'") if token in policy]
+    """A policy that re-allows inline script gives up most of what CSP is for.
+
+    This used to search the whole header text for 'unsafe-inline', so the
+    ubiquitous `style-src 'unsafe-inline'` — which permits no script — was
+    reported as "permits injected script", as was the nonce + 'unsafe-inline'
+    fallback that browsers ignore. Only the directive that governs script counts.
+
+    A header may carry several comma-separated policies; all are enforced, so a
+    script runs only if every one of them allows it.
+    """
+    governing = [_script_sources(p) for p in value.split(",") if p.strip()]
+    restricting = [s for s in governing if s is not None]
+    if not restricting:
+        return (
+            "the policy sets neither script-src nor default-src, so script is unrestricted",
+            "low",
+        )
+    # An unrestricted policy allows everything, so only the restricting ones decide.
+    weaknesses = []
+    if all(_allows_inline(s) for s in restricting):
+        weaknesses.append("'unsafe-inline'")
+    if all("'unsafe-eval'" in s for s in restricting):
+        weaknesses.append("'unsafe-eval'")
     if weaknesses:
         return (
             f"the policy allows {' and '.join(weaknesses)}, which permits injected script",
