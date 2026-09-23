@@ -973,3 +973,33 @@ for CI.
 `functions/` has no committed `package-lock.json`, so `npm ci || npm install` always degrades to
 `npm install` and `npm audit` cannot resolve a tree. Reproducibility/supply-chain gap; wants its
 own PR.
+
+---
+
+# Scheduled scans store nothing: `INGEST_TOKEN` is still unprovisioned
+
+**Date:** 2026-09-23 · Evidence: runs 34125921019, 34849741508, 35606019709
+
+The weekly `scan.yml` schedule has failed on 2026-09-07, 09-14 and 09-21. In every run the
+scan, the finding preparation and the consensus analysis all **pass**. Only **Store Results →
+POST to storeScanResults** fails, and it fails on purpose, before sending anything:
+
+```
+##[error]INGEST_TOKEN is not set — storeScanResults will reject this call.
+```
+
+**Root cause:** the `INGEST_TOKEN` repo secret does not exist. `gh secret list` shows
+`STORE_SCAN_RESULTS_URL` but no `INGEST_TOKEN`. This is the blocker already recorded in
+`docs/SDLC_STATUS.md` (secrets table). The code is not at fault. The fail-fast step is
+working as designed, so a scan that cannot be stored is never reported as green.
+
+**Not fixable from the agent:** `INGEST_TOKEN` is not on the approved ICIT secret list, so
+per the guardrails it is named and never valued. **Bill needs to:** create it in Secret
+Manager on `iron-city-it-threatinspector` (us-east5), grant the functions runtime SA
+`secretAccessor`, store the same value as a repo secret, and redeploy the functions.
+
+**Impact until then:** every scheduled scan runs and then drops its results. The dashboard
+receives nothing new.
+
+**Resume check:** after provisioning, run `gh workflow run scan.yml` and confirm that
+Store Results reports `Results stored`.
