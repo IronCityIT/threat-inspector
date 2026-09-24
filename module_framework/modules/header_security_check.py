@@ -50,8 +50,11 @@ def _check_hsts(value: str) -> tuple[str, str] | None:
     A short-but-nonzero max-age is deliberately NOT flagged. It is weaker than
     the usual recommendation but it is a policy judgement, and this check
     reports facts a client can verify rather than opinions about duration.
+
+    A repeated header arrives combined as `first, second`. RFC 6797 §8.1: the
+    browser processes only the FIRST, so the rest must not be judged.
     """
-    directives = _directives(value)
+    directives = _directives(value.split(",")[0])
     if "max-age" not in directives:
         return ("the header sets no max-age, so no policy is stored", "medium")
     try:
@@ -64,8 +67,22 @@ def _check_hsts(value: str) -> tuple[str, str] | None:
 
 
 def _check_frame_options(value: str) -> tuple[str, str] | None:
-    """Only DENY and SAMEORIGIN are honoured; ALLOW-FROM was dropped by browsers."""
-    token = value.strip().lower()
+    """Only DENY and SAMEORIGIN are honoured; ALLOW-FROM was dropped by browsers.
+
+    A repeated header arrives combined as `DENY, DENY`. The HTML standard reads
+    the values as a SET: identical copies collapse to one, and a conflicting set
+    that contains any real value blocks framing outright. Only a set made purely
+    of junk leaves framing unrestricted.
+    """
+    tokens = {t.strip().lower() for t in value.split(",")}
+    if len(tokens) > 1:
+        if tokens & {"deny", "sameorigin", "allowall"}:
+            return None
+        return (
+            f"{value.strip()!r} contains no recognised value, so no framing policy applies",
+            "low",
+        )
+    token = tokens.pop()
     if token in ("deny", "sameorigin"):
         return None
     if token.startswith("allow-from"):
@@ -74,8 +91,12 @@ def _check_frame_options(value: str) -> tuple[str, str] | None:
 
 
 def _check_content_type_options(value: str) -> tuple[str, str] | None:
-    """`nosniff` is the only token that exists; anything else is ignored."""
-    if value.strip().lower() == "nosniff":
+    """`nosniff` is the only token that exists; anything else is ignored.
+
+    Fetch reads only the FIRST value of a repeated header, so `nosniff, nosniff`
+    is on and `enabled, nosniff` is off.
+    """
+    if value.split(",")[0].strip().lower() == "nosniff":
         return None
     return (f"{value.strip()!r} is not 'nosniff', so MIME-sniffing is not disabled", "low")
 

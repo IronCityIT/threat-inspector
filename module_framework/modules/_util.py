@@ -91,6 +91,22 @@ def _unverified_tls_context() -> ssl.SSLContext:
     return ctx
 
 
+def _header_dict(message) -> dict[str, str]:
+    """Lowercased-key headers, with a repeated field combined as RFC 9110 §5.3 says.
+
+    A plain `{k: v for k, v in message.items()}` keeps only the LAST copy of a
+    repeated field. A CDN and an origin that each add a Content-Security-Policy
+    are both enforced by the browser, but the check only ever saw one of them.
+    Combining with ", " keeps every copy in order; each header check then reads
+    the combined value the way a browser does (HSTS: first; CSP: all).
+    """
+    combined: dict[str, str] = {}
+    for name, value in message.items():
+        key = name.lower()
+        combined[key] = f"{combined[key]}, {value}" if key in combined else value
+    return combined
+
+
 @dataclass(frozen=True)
 class HttpProbe:
     """What a single HEAD told us: the status, and headers when we got them."""
@@ -127,12 +143,10 @@ def http_probe(url: str, timeout: int = 15, verify_tls: bool = True) -> HttpProb
         with urllib.request.urlopen(  # noqa: S310 (scheme checked)
             req, timeout=timeout, context=ctx
         ) as resp:
-            return HttpProbe(
-                status=int(resp.status), headers={k.lower(): v for k, v in resp.headers.items()}
-            )
+            return HttpProbe(status=int(resp.status), headers=_header_dict(resp.headers))
     except urllib.error.HTTPError as e:
         # A real HTTP response, just not a successful one.
-        headers = {k.lower(): v for k, v in e.headers.items()} if e.headers else None
+        headers = _header_dict(e.headers) if e.headers else None
         return HttpProbe(status=int(e.code), headers=headers)
     except (urllib.error.URLError, OSError, ValueError) as e:
         log.debug("no HTTP response from %s: %s", url, e)
