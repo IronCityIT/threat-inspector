@@ -35,6 +35,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if status == 302:
             self.send_header("Location", "/ok")
+        if self.path in ("/ok", "/admin"):
+            # A CDN and the origin each adding the same field.
+            self.send_header("Content-Security-Policy", "default-src 'self'")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         self.end_headers()
         if body:
             self.wfile.write(body)
@@ -110,3 +114,12 @@ def test_non_http_schemes_are_refused_by_the_fetch_helpers(url):
 
 def test_allowed_schemes_are_exactly_http_and_https():
     assert set(ALLOWED_SCHEMES) == {"http", "https"}
+
+
+@pytest.mark.parametrize("path", ["/ok", "/admin"])
+def test_a_repeated_header_keeps_every_copy_in_order(server, path):
+    """Keeping only the last copy hid a CSP the browser still enforced."""
+    probe = http_probe(server + path)
+    assert probe.headers["content-security-policy"] == (
+        "default-src 'self', frame-ancestors 'none'"
+    )

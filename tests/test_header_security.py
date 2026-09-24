@@ -372,3 +372,36 @@ def test_the_not_assessed_finding_names_the_url_that_was_tried(listener):
     sock.close()
     url = f"http://127.0.0.1:{port}"
     assert only(HeaderSecurityCheck().run(url_target(url), {})).evidence["url"] == url
+
+
+# A repeated header reaches the checks combined as "first, second" (RFC 9110).
+# Each must read that the way a browser does, not as one malformed value.
+
+
+def test_repeated_hsts_is_judged_by_the_first_copy_only():
+    """RFC 6797 §8.1: only the first HSTS header is processed."""
+    assert evaluate({"Strict-Transport-Security": "max-age=31536000, max-age=0"}) == []
+    finding = only(evaluate({"Strict-Transport-Security": "max-age=0, max-age=31536000"}))
+    assert "max-age is 0" in finding.detail
+
+
+@pytest.mark.parametrize("value", ["DENY, DENY", "SAMEORIGIN, sameorigin", "DENY, SAMEORIGIN"])
+def test_repeated_frame_options_still_block_framing(value):
+    """Identical copies collapse; a conflicting set with a real value blocks outright."""
+    assert evaluate({"X-Frame-Options": value}) == []
+
+
+def test_repeated_frame_options_of_only_junk_is_flagged():
+    finding = only(evaluate({"X-Frame-Options": "ALLOW-FROM https://a.example, yes"}))
+    assert finding.evidence["state"] == "ineffective"
+
+
+def test_repeated_nosniff_is_judged_by_the_first_copy():
+    """Fetch reads only the first value of X-Content-Type-Options."""
+    assert evaluate({"X-Content-Type-Options": "nosniff, nosniff"}) == []
+    assert only(evaluate({"X-Content-Type-Options": "enabled, nosniff"}))
+
+
+def test_repeated_csp_headers_are_all_enforced():
+    """The script rule in one copy is not lost because another copy follows it."""
+    assert evaluate({"Content-Security-Policy": "default-src 'self', frame-ancestors 'none'"}) == []
