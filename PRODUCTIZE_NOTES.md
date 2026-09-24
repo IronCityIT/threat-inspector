@@ -1118,3 +1118,25 @@ so no findings leave the Firestore path.
   are no LLM keys locally. It will exercise on the first CI scan once `INGEST_TOKEN` is provisioned.
 
 **Follow-up (next PR):** the dashboard does not render `consensus` yet.
+
+## Feature — the dashboard shows the AI analysis under each scan (2026-09-24)
+
+**Gap.** PR #46 stored the sanitized consensus, but the dashboard never read it, so a client could not
+see it.
+**Change.** `renderScans` appends a collapsed "Iron City AI analysis" row under each scan:
+- The headline reads "High risk · 83% confidence · exploitability medium · impact high ·
+  internet-exposed".
+- Expanded, it lists the recommended remediation, how to verify, and the compliance frameworks.
+- The row appears only when `consensus.status === "success"` **and** the severity is one of the five
+  known values. Failure, `no_result`, `unavailable` and missing records render nothing, so no verdict is
+  invented.
+- All text goes through `textContent`, never markup, because the prose is LLM-derived.
+- Malformed fields are skipped, not thrown. A throw would blank the whole scan table.
+
+**Validation.**
+- `npm run test:ui`: 24/24, with 5 new tests. Two of them failed before the change: the row renders
+  (collapsed by default, remediation list matches), and hostile `<img onerror>` in every text field stays
+  text (0 `img` elements, the handler never ran).
+- Also covered: no row for any non-success status; an unknown severity is never echoed; a malformed
+  record still renders the scan row; an expanded long answer causes no page overflow at 375px.
+- `node --check` passes.
