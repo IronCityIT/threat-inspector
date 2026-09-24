@@ -284,3 +284,238 @@ def test_an_empty_finding_set_is_not_marked_truncated():
     payload = bsp.build_payload(scan(findings=[]), META)
     assert payload["summary"]["truncated"] is False
     assert payload["summary"]["stored"] == 0
+
+
+# --- AI consensus -----------------------------------------------------------
+# The shared engine returns one ConsensusResult for the scan document. It used to
+# be discarded (only the job's pass/fail reached the record). What reaches the
+# record now is an allowlisted, bounded summary: the raw result names the LLM
+# providers and models behind every vote, which is not client-facing.
+
+
+def engine_result(**overrides):
+    """The shape consensus-engine's analyze.yml emits (asdict(ConsensusResult))."""
+    base = {
+        "consensus_severity": "HIGH",
+        "confidence_percent": 82.5,
+        "exploitability": "MEDIUM",
+        "impact": "HIGH",
+        "false_positive_likelihood": "LOW",
+        "internet_exposed": True,
+        "compliance_impact": {
+            "frameworks": ["PCI-DSS", "SOC2"],
+            "control_domains": ["Access Control"],
+            "control_mappings": {"SOC2": ["CC6.1", "CC7.1"]},
+            "audit_risk": "HIGH",
+            "breach_notification_risk": False,
+        },
+        "aggregated_remediation": ["Disable TLS 1.0 and 1.1 on the web tier"],
+        "verification_steps": ["Re-run the TLS check and confirm only TLS 1.2+ is offered"],
+        "total_models": 15,
+        "successful_models": 12,
+        "failed_models": 3,
+        "severity_distribution": {"HIGH": 9, "MEDIUM": 3},
+        "weighted_scores": {"HIGH": 71.0, "MEDIUM": 29.0},
+        "model_responses": [
+            {
+                "model_name": "llama-3.3-70b-versatile",
+                "provider": "groq",
+                "reasoning": "As an LLM hosted by Groq ...",
+                "error": None,
+            }
+        ],
+        "engine_version": "5.0",
+        "timestamp": "2026-09-24T12:00:00Z",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_consensus_assessment_reaches_the_record():
+    p = bsp.build_payload(scan(), META, consensus=engine_result())
+    c = p["consensus"]
+    assert c["status"] == "success"
+    assert c["severity"] == "HIGH"
+    assert c["confidence_percent"] == 82.5
+    assert c["exploitability"] == "MEDIUM"
+    assert c["impact"] == "HIGH"
+    assert c["false_positive_likelihood"] == "LOW"
+    assert c["internet_exposed"] is True
+    assert c["remediation"] == ["Disable TLS 1.0 and 1.1 on the web tier"]
+    assert c["verification_steps"] == ["Re-run the TLS check and confirm only TLS 1.2+ is offered"]
+    assert c["compliance"]["frameworks"] == ["PCI-DSS", "SOC2"]
+    assert c["compliance"]["control_mappings"] == {"SOC2": ["CC6.1", "CC7.1"]}
+    assert c["compliance"]["audit_risk"] == "HIGH"
+    assert c["compliance"]["breach_notification_risk"] is False
+    assert c["models"] == {"total": 15, "succeeded": 12}
+    assert c["analyzed_at"] == "2026-09-24T12:00:00Z"
+
+
+def test_consensus_never_carries_provider_or_model_identity():
+    """model_responses / weighted_scores name the LLMs; none of it is stored."""
+    p = bsp.build_payload(scan(), META, consensus=engine_result())
+    blob = json.dumps(p["consensus"]).lower()
+    for leaked in ("groq", "llama", "model_responses", "weighted_scores", "reasoning", "provider"):
+        assert leaked not in blob
+
+
+def test_consensus_free_text_does_not_name_underlying_scanners():
+    """LLM remediation text is client-facing, so scanner names are redacted."""
+    result = engine_result(
+        aggregated_remediation=["Close port 23, then confirm with NMAP -sV that it is filtered"],
+        verification_steps=["Re-scan with nuclei templates for CVE-2021-44228"],
+    )
+    c = bsp.build_payload(scan(), META, consensus=result)["consensus"]
+    blob = json.dumps(c).lower()
+    for tool in ("nmap", "nuclei"):
+        assert tool not in blob
+    assert c["remediation"] == [
+        "Close port 23, then confirm with a scanner -sV that it is filtered"
+    ]
+    # The rest of the advice survives; only the name is replaced.
+    assert "CVE-2021-44228" in c["verification_steps"][0]
+
+
+def test_no_successful_model_means_no_assessment():
+    """The engine answers 'UNKNOWN' when every model failed; that is not a verdict."""
+    result = engine_result(
+        consensus_severity="UNKNOWN",
+        confidence_percent=0,
+        successful_models=0,
+        failed_models=15,
+        compliance_impact={},
+        aggregated_remediation=[],
+        verification_steps=[],
+    )
+    c = bsp.build_payload(scan(), META, consensus=result)["consensus"]
+    assert c == {"status": "unavailable", "models": {"total": 15, "succeeded": 0}}
+
+
+def test_missing_consensus_keeps_the_job_status_only():
+    """The analysis job failed or was skipped: record why, invent nothing."""
+    meta = {**META, "consensus_status": "failure"}
+    assert bsp.build_payload(scan(), meta)["consensus"] == {"status": "failure"}
+
+
+def test_job_succeeded_but_returned_nothing_usable():
+    for bad in (None, "not a result", [engine_result(), engine_result()], {"unexpected": 1}):
+        c = bsp.build_payload(scan(), META, consensus=bad)["consensus"]
+        assert c == {"status": "no_result"}, bad
+
+
+def test_single_element_list_is_accepted():
+    """The engine collapses one result to an object, but a list of one is equivalent."""
+    c = bsp.build_payload(scan(), META, consensus=[engine_result()])["consensus"]
+    assert c["severity"] == "HIGH"
+
+
+def test_consensus_enums_are_validated():
+    """An LLM-derived field outside its vocabulary is dropped, not stored verbatim."""
+    result = engine_result(
+        consensus_severity="<img src=x onerror=alert(1)>",
+        exploitability="VERY",
+        internet_exposed="yes",
+        confidence_percent="high",
+    )
+    c = bsp.build_payload(scan(), META, consensus=result)["consensus"]
+    assert c["status"] == "success"
+    for key in ("severity", "exploitability", "internet_exposed", "confidence_percent"):
+        assert key not in c
+    assert c["impact"] == "HIGH"
+
+
+def test_consensus_is_bounded():
+    """A runaway LLM answer cannot push the record past Firestore's limit."""
+    result = engine_result(
+        aggregated_remediation=["x" * 50_000] * 500,
+        verification_steps=["y" * 50_000] * 500,
+        compliance_impact={
+            "frameworks": ["f" * 5_000] * 500,
+            "control_domains": ["d"] * 500,
+            "control_mappings": {f"K{i}": ["c" * 5_000] * 500 for i in range(500)},
+            "audit_risk": "HIGH",
+            "breach_notification_risk": True,
+        },
+    )
+    c = bsp.build_payload(scan(), META, consensus=result)["consensus"]
+    assert len(c["remediation"]) == bsp.MAX_CONSENSUS_ITEMS
+    assert len(c["verification_steps"]) == bsp.MAX_CONSENSUS_ITEMS
+    assert all(len(s) <= bsp.MAX_CONSENSUS_TEXT + len("… [truncated]") for s in c["remediation"])
+    assert len(c["compliance"]["control_mappings"]) <= bsp.MAX_CONSENSUS_ITEMS
+    assert len(json.dumps(c)) < 60_000
+
+
+def test_cli_reads_consensus_file(tmp_path):
+    findings = tmp_path / "findings.json"
+    findings.write_text(json.dumps(scan()))
+    consensus = tmp_path / "consensus.json"
+    consensus.write_text(json.dumps(engine_result()))
+    out = tmp_path / "payload.json"
+    rc = bsp.main(
+        [
+            "--findings",
+            str(findings),
+            "--out",
+            str(out),
+            "--scan-type",
+            "modular_scan",
+            "--scan-id",
+            "ti-123",
+            "--client-id",
+            "acme",
+            "--client-name",
+            "Acme",
+            "--target",
+            "example.com",
+            "--consensus-status",
+            "success",
+            "--consensus-file",
+            str(consensus),
+        ]
+    )
+    assert rc == 0
+    assert json.loads(out.read_text())["consensus"]["severity"] == "HIGH"
+
+
+@pytest.mark.parametrize("content", ["", "{not json", "\x00\x01"])
+def test_cli_tolerates_unreadable_consensus_file(tmp_path, content):
+    """A bad consensus blob must not cost the client their findings."""
+    findings = tmp_path / "findings.json"
+    findings.write_text(json.dumps(scan(findings=[{"severity": "high", "title": "t"}])))
+    consensus = tmp_path / "consensus.json"
+    consensus.write_text(content)
+    out = tmp_path / "payload.json"
+    rc = bsp.main(
+        [
+            "--findings",
+            str(findings),
+            "--out",
+            str(out),
+            "--scan-type",
+            "modular_scan",
+            "--scan-id",
+            "ti-123",
+            "--client-id",
+            "acme",
+            "--client-name",
+            "Acme",
+            "--target",
+            "example.com",
+            "--consensus-status",
+            "success",
+            "--consensus-file",
+            str(consensus),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert payload["consensus"] == {"status": "no_result"}
+    assert payload["summary"]["total"] == 1
+
+
+def test_boolean_model_count_is_not_a_success():
+    """True is an int in Python; it must not read as "one model agreed"."""
+    c = bsp.build_payload(scan(), META, consensus=engine_result(successful_models=True))[
+        "consensus"
+    ]
+    assert c["status"] == "unavailable"

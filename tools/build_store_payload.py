@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +128,135 @@ def fit_to_budget(payload: dict, budget: int = DOC_BUDGET) -> dict:
     return payload
 
 
+# --- AI consensus ------------------------------------------------------------
+# consensus-engine returns asdict(ConsensusResult) for the scan document. Only an
+# allowlisted summary is stored: `model_responses` and `weighted_scores` name the
+# LLM providers and models behind every vote, and `reasoning` is raw model prose.
+# None of that is client-facing.
+MAX_CONSENSUS_ITEMS = 10
+MAX_CONSENSUS_TEXT = 1_000
+# Framework names, control domains and control ids are labels, not prose.
+MAX_CONSENSUS_LABEL = 120
+
+_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
+_LEVELS = {"HIGH", "MEDIUM", "LOW"}
+
+# LLM advice routinely says "verify with nmap". Remediation text is shown to the
+# client, so underlying scanner names are replaced. Same list as the catalog's
+# white-label test (tests/test_catalog.py).
+_TOOL_NAMES = re.compile(
+    r"\b(nessus|qualys|nmap|nuclei|subfinder|zap|openvas|burp|wazuh|prowler|"
+    r"puppeteer|selenium|metasploit)\b",
+    re.IGNORECASE,
+)
+
+
+def _text(value: Any, limit: int = MAX_CONSENSUS_TEXT) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = _TOOL_NAMES.sub("a scanner", value.strip())
+    if len(text) > limit:
+        text = text[:limit] + "… [truncated]"
+    return text
+
+
+def _texts(values: Any, limit: int = MAX_CONSENSUS_TEXT) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out = [t for t in (_text(v, limit) for v in values) if t]
+    return out[:MAX_CONSENSUS_ITEMS]
+
+
+def _enum(value: Any, allowed: set[str]) -> str | None:
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _count(value: Any) -> int:
+    # bool is an int subclass; True is not a model count.
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def sanitize_consensus(raw: Any, job_status: str) -> dict[str, Any]:
+    """Reduce the engine's result to what a client may see.
+
+    `job_status` is the analyze job's own result (success/failure/skipped/...).
+    Anything the engine did not produce is reported as a status, never invented.
+    """
+    if job_status != "success":
+        return {"status": job_status}
+    # The engine collapses a single result to an object; a list of one is the
+    # same thing. More than one means the input was not a scan document.
+    if isinstance(raw, list) and len(raw) == 1:
+        raw = raw[0]
+    if not isinstance(raw, dict) or "consensus_severity" not in raw:
+        return {"status": "no_result"}
+
+    models = {
+        "total": _count(raw.get("total_models")),
+        "succeeded": _count(raw.get("successful_models")),
+    }
+    # With no successful model the engine answers "UNKNOWN" across the board.
+    # That is the absence of a verdict, and is stored as such.
+    if models["succeeded"] < 1:
+        return {"status": "unavailable", "models": models}
+
+    out: dict[str, Any] = {"status": "success"}
+    optional = {
+        "severity": _enum(raw.get("consensus_severity"), _SEVERITIES),
+        "exploitability": _enum(raw.get("exploitability"), _LEVELS),
+        "impact": _enum(raw.get("impact"), _LEVELS),
+        "false_positive_likelihood": _enum(raw.get("false_positive_likelihood"), _LEVELS),
+    }
+    out.update({k: v for k, v in optional.items() if v is not None})
+
+    confidence = raw.get("confidence_percent")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        if 0 <= confidence <= 100:
+            out["confidence_percent"] = confidence
+    if isinstance(raw.get("internet_exposed"), bool):
+        out["internet_exposed"] = raw["internet_exposed"]
+
+    out["remediation"] = _texts(raw.get("aggregated_remediation"))
+    out["verification_steps"] = _texts(raw.get("verification_steps"))
+
+    impact = raw.get("compliance_impact")
+    if isinstance(impact, dict):
+        compliance: dict[str, Any] = {
+            "frameworks": _texts(impact.get("frameworks"), MAX_CONSENSUS_LABEL),
+            "control_domains": _texts(impact.get("control_domains"), MAX_CONSENSUS_LABEL),
+        }
+        mappings = impact.get("control_mappings")
+        if isinstance(mappings, dict):
+            cleaned: dict[str, list[str]] = {}
+            for key, controls in mappings.items():
+                name = _text(key, MAX_CONSENSUS_LABEL)
+                if name and len(cleaned) < MAX_CONSENSUS_ITEMS:
+                    cleaned[name] = _texts(controls, MAX_CONSENSUS_LABEL)
+            compliance["control_mappings"] = cleaned
+        audit_risk = _enum(impact.get("audit_risk"), _LEVELS)
+        if audit_risk:
+            compliance["audit_risk"] = audit_risk
+        if isinstance(impact.get("breach_notification_risk"), bool):
+            compliance["breach_notification_risk"] = impact["breach_notification_risk"]
+        out["compliance"] = compliance
+
+    out["models"] = models
+    analyzed_at = raw.get("timestamp")
+    if isinstance(analyzed_at, str) and len(analyzed_at) <= 40:
+        out["analyzed_at"] = analyzed_at
+    return out
+
+
+def load_consensus(path: Path | None) -> Any:
+    """Read the engine's result. Unreadable is None: it must not cost the findings."""
+    if path is None or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
 def summarize(findings: list[dict]) -> dict[str, int]:
     """Count findings by severity, plus a total."""
     summary: dict[str, int] = {"total": len(findings)}
@@ -136,7 +266,7 @@ def summarize(findings: list[dict]) -> dict[str, int]:
     return summary
 
 
-def build_payload(scan: dict, meta: dict[str, str]) -> dict[str, Any]:
+def build_payload(scan: dict, meta: dict[str, str], consensus: Any = None) -> dict[str, Any]:
     """Turn a scan document + run metadata into the stored record.
 
     The important decision here is `status`. An empty findings list means
@@ -166,7 +296,7 @@ def build_payload(scan: dict, meta: dict[str, str]) -> dict[str, Any]:
         "scan_status": scan_status,
         "summary": summarize(findings),
         "findings": findings,
-        "consensus": {"status": meta.get("consensus_status", "unknown")},
+        "consensus": sanitize_consensus(consensus, meta.get("consensus_status", "unknown")),
         "diagnostics": {
             "scan_status": scan_status,
             "modules_run": scan.get("modules_run") or [],
@@ -228,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--client-name", required=True)
     p.add_argument("--target", required=True)
     p.add_argument("--consensus-status", default="unknown")
+    p.add_argument("--consensus-file", help="the engine's decoded consensus_b64 output")
     args = p.parse_args(argv)
 
     scan = load_scan(find_findings(Path(args.findings)))
@@ -241,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             "target": args.target,
             "consensus_status": args.consensus_status,
         },
+        consensus=load_consensus(Path(args.consensus_file) if args.consensus_file else None),
     )
     Path(args.out).write_text(json.dumps(payload))
 

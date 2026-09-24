@@ -94,8 +94,10 @@ jobs:
       product: threat-inspector
       client_id: ${{ needs.prep.outputs.client_id }}
       scan_id: ${{ inputs.scan_id }}
-    # Engine requires GROQ_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY,
-    # IRONCITY_API_KEY — all provided via the org-level secret inheritance chain.
+    # post_to_api is left at the engine's default (false): the result comes back
+    # as the consensus_b64 output and is stored below, on the Firestore path.
+    # Engine keys (GROQ/OPENROUTER/GEMINI) are optional on its side and come via
+    # the org-level secret inheritance chain.
     secrets: inherit
 
   store:
@@ -126,8 +128,15 @@ jobs:
           CLIENT_NAME: ${{ inputs.client_name }}
           TARGET: ${{ inputs.target }}
           CONSENSUS_STATUS: ${{ needs.analyze.result }}
+          # The engine's result, returned instead of POSTed to its ingest API.
+          # Via env and a file, never argv: it can run to tens of KB. The builder
+          # keeps an allowlisted summary only; the raw result names the models.
+          CONSENSUS_B64: ${{ needs.analyze.outputs.consensus_b64 }}
         run: |
           set -euo pipefail
+          # An undecodable result is recorded as "no_result"; it must not cost
+          # the client their findings, so this never fails the step.
+          printf '%s' "${CONSENSUS_B64:-}" | base64 -d > consensus.json 2>/dev/null || : > consensus.json
           python3 tools/build_store_payload.py \
             --findings incoming \
             --out payload.json \
@@ -136,7 +145,8 @@ jobs:
             --client-id "$CLIENT_ID" \
             --client-name "$CLIENT_NAME" \
             --target "$TARGET" \
-            --consensus-status "${CONSENSUS_STATUS:-unknown}"
+            --consensus-status "${CONSENSUS_STATUS:-unknown}" \
+            --consensus-file consensus.json
 
       # Validation gate: never POST a payload that is not well-formed JSON.
       - name: Validate payload JSON
