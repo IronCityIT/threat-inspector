@@ -89,7 +89,7 @@ jobs:
       - name: Syntax-check functions
         working-directory: functions
         run: |
-          for f in index.js trigger.js exchange.js exchange_policy.js scan_id.js; do node --check "$f"; done
+          for f in index.js trigger.js exchange.js exchange_policy.js scan_id.js target_scope.js; do node --check "$f"; done
           echo "✅ Functions parse clean"
 
       # The dashboard renders from catalog.json. If it has drifted from the

@@ -5,7 +5,7 @@
   "description": "Browser tests for the Threat Inspector dashboard.",
   "scripts": {
     "test:ui": "node tests/ui/dashboard.spec.mjs",
-    "test:functions": "node tests/functions/auth.test.mjs && node tests/functions/tenancy.test.mjs && node tests/functions/scan_id.test.mjs && node tests/functions/exchange_audience.test.mjs",
+    "test:functions": "node tests/functions/auth.test.mjs && node tests/functions/tenancy.test.mjs && node tests/functions/scan_id.test.mjs && node tests/functions/exchange_audience.test.mjs && node tests/functions/target_scope.test.mjs",
     "test": "npm run test:functions && npm run test:ui",
     "test:rules": "firebase emulators:exec --only firestore --project demo-threat-inspector \"node tests/functions/rules.test.mjs\""
   },
