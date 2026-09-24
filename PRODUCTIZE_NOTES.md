@@ -800,7 +800,7 @@ $ python3 module_framework/cli.py --group quick --targets example.com --dry-run
 3. **`GITHUB_DISPATCH_TOKEN`** (Secret Manager, us-east5) for `triggerScan`. Still outstanding
    from PR #5. Not in the approved secret list, so the name is referenced, never a value.
 
-## Consensus egress — still open, tracked separately
+## Consensus egress — RESOLVED 2026-09-24 (see "AI consensus now reaches the record" below)
 
 Threat Inspector passes a `scan_id` on every run, and the shared engine POSTs its consensus
 output to `api.ironcityit.com/ingest` whenever `scan_id` is non-empty. That conflicts with
@@ -1078,3 +1078,43 @@ characters first. Every host token and allow-list domain must now match a strict
 is refused as "not a valid hostname". The reviewer's cases are a regression test that **fails on the
 previous matcher** (11/12) and passes now (12/12). Full `test:functions` is green.
 
+## Fix — the AI consensus was computed on every scan and then discarded (2026-09-24)
+
+**Failure.** The store job passed only `needs.analyze.result` (the job's pass/fail) into the payload,
+so every record read `consensus: {"status": "success"}` and nothing else. The engine's assessment
+(severity, confidence, remediation, compliance mapping) never reached Firestore or the dashboard.
+**Root cause.** When TI was wired, the engine could only deliver its result by POSTing to the legacy
+ingest API. Engine PR #2 (the opt-out) was closed. Its replacement, #3, added the `consensus_b64`
+output, and #5 made `post_to_api` default to `false`. TI never consumed the new output. That also
+closes the "Consensus egress" item above: TI leaves `post_to_api` at the engine's default of `false`,
+so no findings leave the Firestore path.
+**Fix.**
+- `_consensus-store.yml` reads `needs.analyze.outputs.consensus_b64` through env, decodes it to a file
+  (never argv), and passes `--consensus-file`. An undecodable blob becomes `consensus.status:
+  "no_result"`. It never fails the step, so it never costs the client their findings.
+- `tools/build_store_payload.py` `sanitize_consensus()` is an **allowlist**:
+  - Stored: severity, confidence, exploitability, impact, false-positive likelihood, internet
+    exposure, remediation, verification steps, compliance (frameworks/domains/control
+    mappings/audit + breach risk), model counts, `analyzed_at`.
+  - Dropped: `model_responses`, `weighted_scores` and `reasoning`, which name the LLM providers and
+    models (white-label).
+  - Enums are validated, and a value outside its vocabulary is dropped rather than stored.
+  - Scanner names in LLM free text become "a scanner".
+  - Lists are capped at 10, prose at 1,000 chars and labels at 120, so the block is under 60 KB even
+    for a runaway answer.
+  - Zero successful models is stored as `status: "unavailable"`, not the engine's placeholder
+    `UNKNOWN` verdict.
+  - A non-success job status is recorded as-is.
+
+**Validation.**
+- `tests/test_store_payload.py`: 13 new tests, 12 of them failing before the fix. 40/40 pass.
+- The real engine was run locally with no LLM keys (0/15 models), and its actual `result.json` was fed
+  through the extracted workflow step. Result: `{"status": "unavailable", "models": {"total": 15,
+  "succeeded": 0}}`. Garbage base64 gives `no_result`. The payload passes the `{` first-byte and
+  `json.tool` gates.
+- ruff, format, mypy (CI scope) clean; pytest 1,034; smoke 50/50; `test:functions` 12/12; pip-audit
+  clean; all workflow YAMLs parse; actionlint only shows the SC2129 note already on `main`.
+- Not exercised: the success path with live model answers, which is fixture-tested only because there
+  are no LLM keys locally. It will exercise on the first CI scan once `INGEST_TOKEN` is provisioned.
+
+**Follow-up (next PR):** the dashboard does not render `consensus` yet.
