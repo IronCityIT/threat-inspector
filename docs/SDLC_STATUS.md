@@ -324,7 +324,7 @@ repo, per the ICIT secret policy. Each is needed before a deploy can succeed.
 | `AUTH0_CLIENT_ID` | ❌ missing | Dashboard sign-in. The SPA application does not exist in the `dev-ws5377dam2tnlv5g` tenant. |
 | `FIREBASE_API_KEY` | ❌ missing | Dashboard Firebase web config. |
 | `GITHUB_DISPATCH_TOKEN` | ❌ missing | `triggerScan` cannot dispatch a workflow. |
-| `AUTH0_AUDIENCE` | ❌ missing (optional) | Only if the access token needs an API audience. |
+| `AUTH0_AUDIENCE` | ❌ missing (**required**) | **Required.** The Auth0 API identifier. The dashboard requests it and `exchangeAuth0Token` verifies it. The exchange fails closed and the deploy refuses to run without it (2026-09-24). |
 | `TI_API_TOKENS` | ⚙️ **operator-set, not a repo secret** | The local REST API refuses to serve tenant data without it. Format `'<token>:<client_id>,...'`, set on whatever runs the container. Not a GitHub secret — it belongs to the deployment, not the build. `TI_ALLOW_UNAUTHENTICATED=true` bypasses it for local development ONLY and logs an error on every request. |
 | `STORE_SCAN_RESULTS_URL` | ✅ **set 2026-08-29** | Present. Note: PRODUCTIZE_NOTES.md still lists this as outstanding — that entry is stale, confirmed via `gh secret list`. |
 

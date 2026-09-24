@@ -20,6 +20,7 @@ const logger = require("firebase-functions/logger");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { createRemoteJWKSet, jwtVerify } = require("jose");
+const { configProblem, verifyOptions } = require("./exchange_policy");
 
 if (!getApps().length) initializeApp();
 
@@ -67,6 +68,15 @@ exports.exchangeAuth0Token = onRequest(
       return;
     }
 
+    // Fail closed: without an audience any token the tenant signs would verify
+    // (see exchange_policy.js). Misconfiguration is a server fault, not the user's.
+    const misconfigured = configProblem(AUTH0_AUDIENCE);
+    if (misconfigured) {
+      logger.error("exchange misconfigured", { reason: misconfigured });
+      res.status(500).json({ error: "exchange_misconfigured" });
+      return;
+    }
+
     const header = req.get("Authorization") || "";
     const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
     if (!token) {
@@ -76,10 +86,7 @@ exports.exchangeAuth0Token = onRequest(
 
     let claims;
     try {
-      const verified = await jwtVerify(token, jwks, {
-        issuer: ISSUER,
-        ...(AUTH0_AUDIENCE ? { audience: AUTH0_AUDIENCE } : {}),
-      });
+      const verified = await jwtVerify(token, jwks, verifyOptions(ISSUER, AUTH0_AUDIENCE));
       claims = verified.payload;
     } catch (err) {
       // Signature, issuer, audience or expiry — all are "not a valid session".

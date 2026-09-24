@@ -89,7 +89,7 @@ jobs:
       - name: Syntax-check functions
         working-directory: functions
         run: |
-          for f in index.js trigger.js exchange.js; do node --check "$f"; done
+          for f in index.js trigger.js exchange.js exchange_policy.js scan_id.js; do node --check "$f"; done
           echo "✅ Functions parse clean"
 
       # The dashboard renders from catalog.json. If it has drifted from the
@@ -119,6 +119,9 @@ jobs:
           MISSING=""
           [ -z "$AUTH0_CLIENT_ID" ] && MISSING="$MISSING AUTH0_CLIENT_ID"
           [ -z "$FIREBASE_API_KEY" ] && MISSING="$MISSING FIREBASE_API_KEY"
+          # exchangeAuth0Token fails closed without an audience (functions/exchange_policy.js),
+          # so deploying without one would ship a sign-in that 500s for everyone.
+          [ -z "$AUTH0_AUDIENCE" ] && MISSING="$MISSING AUTH0_AUDIENCE"
           if [ -n "$MISSING" ]; then
             echo "::error::missing dashboard config secret(s):$MISSING"
             echo "The dashboard cannot sign anyone in without them. Set them on this repo."
@@ -146,6 +149,20 @@ jobs:
           if left:
               raise SystemExit(f"placeholders not replaced: {left}")
           print("config.js populated")
+
+          # The functions runtime needs the same Auth0 domain and audience the
+          # dashboard was just given. Previously neither reached it: the audience
+          # was always empty there (so the aud check was skipped) and the domain
+          # fell back to a hardcoded default. The Firebase CLI loads functions/.env
+          # at deploy; it is gitignored. Neither value is a secret.
+          env_lines = []
+          for key in ("AUTH0_DOMAIN", "AUTH0_AUDIENCE"):
+              value = os.environ[key].strip()
+              if not value or any(c in value for c in "\r\n\"'"):
+                  raise SystemExit(f"{key} is empty or contains characters .env cannot hold")
+              env_lines.append(f"{key}={value}")
+          pathlib.Path("functions/.env").write_text("\n".join(env_lines) + "\n")
+          print("functions/.env written:", ", ".join(k.split("=")[0] for k in env_lines))
           PY
 
       - name: Authenticate to Google Cloud

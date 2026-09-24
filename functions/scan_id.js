@@ -19,4 +19,13 @@ function scanIdProblem(scanId) {
   return null;
 }
 
-module.exports = { scanIdProblem, MAX_ID_BYTES };
+/**
+ * Server-side scan id for triggerScan. The random suffix stops two scans started
+ * by one tenant in the same millisecond (double-click, two tabs) from sharing an
+ * id, where the second set() would overwrite the first's queued record.
+ */
+function mintScanId(clientId, now = Date.now(), random = () => require("crypto").randomBytes(4).toString("hex")) {
+  return `ti-${clientId}-${now}-${random()}`;
+}
+
+module.exports = { scanIdProblem, mintScanId, MAX_ID_BYTES };

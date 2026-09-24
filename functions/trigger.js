@@ -36,6 +36,7 @@ const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { mintScanId } = require("./scan_id");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -92,7 +93,7 @@ exports.triggerScan = onCall(
 
     // scan_id is minted server-side so the dashboard can poll for it immediately
     // and two tenants can never collide on one document.
-    const scanId = `ti-${clientId}-${Date.now()}`;
+    const scanId = mintScanId(clientId);
     const ref = db
       .collection("clients")
       .doc(clientId)
