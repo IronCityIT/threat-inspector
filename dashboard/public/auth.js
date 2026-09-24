@@ -157,7 +157,14 @@ function wireStart(app, catalog) {
       await triggerScan({ workflow: "scan", target, ...selectionToArgs(form, catalog) });
       $("target").value = "";
     } catch (err) {
-      showError("The assessment could not be started. Please try again.");
+      // An out-of-scope target is refused with permission-denied and a message
+      // written for the client (functions/target_scope.js); retrying will not help,
+      // so say why. Every other failure keeps the generic text.
+      showError(
+        err && err.code === "functions/permission-denied" && err.message
+          ? err.message
+          : "The assessment could not be started. Please try again."
+      );
       console.error(err);
     } finally {
       $("start").disabled = false;

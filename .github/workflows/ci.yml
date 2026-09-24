@@ -173,7 +173,7 @@ jobs:
       - name: Syntax check
         working-directory: functions
         run: |
-          for f in index.js trigger.js exchange.js exchange_policy.js scan_id.js; do node --check "$f"; done
+          for f in index.js trigger.js exchange.js exchange_policy.js scan_id.js target_scope.js; do node --check "$f"; done
       - name: Dependency audit
         working-directory: functions
         run: npm audit --audit-level=high

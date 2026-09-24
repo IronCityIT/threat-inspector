@@ -37,6 +37,7 @@ const logger = require("firebase-functions/logger");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { mintScanId } = require("./scan_id");
+const { targetScopeProblem } = require("./target_scope");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -89,6 +90,17 @@ exports.triggerScan = onCall(
     const target = String(data.target || "").trim();
     if (!target) {
       throw new HttpsError("invalid-argument", "A target is required.");
+    }
+
+    // A client may only scan what ICIT has verified it owns (Bill, 2026-09-24).
+    // Applies to every dispatchable workflow, including asset discovery and port
+    // scans. The allow-list is on the client document; only operators can write it.
+    // Checked before anything is queued, so a refused target leaves no record.
+    const clientDoc = await db.collection("clients").doc(clientId).get();
+    const scopeProblem = targetScopeProblem(target, clientDoc.exists ? clientDoc.get("allowed_targets") : null);
+    if (scopeProblem) {
+      logger.warn("scan refused: target out of scope", { client_id: clientId, target });
+      throw new HttpsError("permission-denied", scopeProblem);
     }
 
     // scan_id is minted server-side so the dashboard can poll for it immediately

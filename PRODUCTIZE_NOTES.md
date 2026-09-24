@@ -1040,3 +1040,41 @@ the same millisecond shared an id, and the second overwrote the first's queued r
 - Not exercised: a live deploy and login (`FIREBASE_SERVICE_ACCOUNT`, `AUTH0_CLIENT_ID` and
   `AUTH0_AUDIENCE` are not provisioned).
 
+## Feature — client-started scans are restricted to the client's verified domains (2026-09-24)
+
+**Problem.** `triggerScan` authenticated the tenant but accepted any `target` for every dispatchable
+workflow, including `asset-discovery` and `port-scan`. A client user could point ICIT's scanners at third
+parties (legal and abuse exposure) or at another client. Bill decided on 2026-09-24 that scans are
+restricted to each client's verified domains.
+**Change.**
+- `functions/target_scope.js` (pure; shared verbatim with surge/DEA/shadowscan) checks every
+  comma-separated token against `clients/{client_id}.allowed_targets`:
+  - domains cover their subdomains;
+  - IPs and CIDRs must lie inside one allowed range;
+  - URLs are judged by their parsed hostname, so `https://acme.com@evil.com` means `evil.com`;
+  - bare hostnames are refused;
+  - no list means no scans (fail closed).
+- `triggerScan` checks before writing the queued record, and refuses with `permission-denied` and a
+  client-readable message. The dashboard shows that message instead of "please try again".
+- `firestore.rules` already deny all client writes to `clients/{id}`, so only operators can set the
+  list. The rules ship in the same deploy step as the functions. Operator-run `workflow_dispatch` scans
+  are unaffected.
+
+**Operator setup (per client).** Firestore → `clients/<client_id>` → field `allowed_targets` (array),
+e.g. `["acme.com", "203.0.113.0/24"]`.
+
+**Validation.** `tests/functions/target_scope.test.mjs` (new, in `test:functions`): 11/11. The real
+`triggerScan` handler runs against an in-memory Firestore stand-in with fetch stubbed. The in-scope
+target is queued and dispatched. Five refusals (third-party domain, userinfo URL trick, oversized CIDR
+via `port-scan`, third party via `asset-discovery`, a client with no list) each write **0** records and
+make **0** dispatches. The full `test:functions`, ruff, format, actionlint, JSON and YAML checks are
+green.
+
+**Hardening from review of PR #45 (2026-09-24).** Parser differential: a scheme-less token was accepted
+with any characters as long as it ended in an allowed domain (`evil.com#.acme.com`, `evil.com?.acme.com`,
+`evil.com@x.acme.com`, `evil.com%23.acme.com`, a backslash, a space, `evil.com:1.acme.com`). Built into a
+URL, the first two resolve to `evil.com`. It was unexploitable only because `targets.py` rejects those
+characters first. Every host token and allow-list domain must now match a strict hostname grammar, or it
+is refused as "not a valid hostname". The reviewer's cases are a regression test that **fails on the
+previous matcher** (11/12) and passes now (12/12). Full `test:functions` is green.
+
