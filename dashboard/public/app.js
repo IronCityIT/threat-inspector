@@ -126,7 +126,72 @@ export function renderScans(scans, tbody, emptyEl) {
       row.appendChild(td);
       tbody.appendChild(row);
     }
+
+    const analysis = analysisRow(scan.consensus, cells.length);
+    if (analysis) tbody.appendChild(analysis);
   }
+}
+
+const LEVELS = ["HIGH", "MEDIUM", "LOW"];
+const SEVERITY_LABELS = { CRITICAL: "Critical", HIGH: "High", MEDIUM: "Medium", LOW: "Low", INFO: "Informational" };
+
+/**
+ * The stored AI consensus as a collapsed row under its scan, or null when there
+ * is no verdict to show. Everything here is LLM-derived text, so it is only ever
+ * assigned through textContent — never parsed as markup.
+ */
+export function analysisRow(consensus, colSpan) {
+  if (!consensus || consensus.status !== "success") return null;
+  const severity = SEVERITY_LABELS[consensus.severity];
+  if (!severity) return null;
+
+  const facts = [`${severity} risk`];
+  if (typeof consensus.confidence_percent === "number") {
+    facts.push(`${Math.round(consensus.confidence_percent)}% confidence`);
+  }
+  // A malformed record must not throw here: that would blank the whole table.
+  const level = (v) => (typeof v === "string" && LEVELS.includes(v) ? v.toLowerCase() : null);
+  if (level(consensus.exploitability)) facts.push(`exploitability ${level(consensus.exploitability)}`);
+  if (level(consensus.impact)) facts.push(`impact ${level(consensus.impact)}`);
+  if (consensus.internet_exposed === true) facts.push("internet-exposed");
+
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = `Iron City AI analysis: ${facts.join(" · ")}`;
+  details.appendChild(summary);
+
+  const list = (title, items, className) => {
+    if (!Array.isArray(items) || !items.length) return;
+    const heading = document.createElement("p");
+    heading.className = "analysis-heading";
+    heading.textContent = title;
+    const ol = document.createElement("ol");
+    ol.className = className;
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.textContent = String(item);
+      ol.appendChild(li);
+    }
+    details.append(heading, ol);
+  };
+  list("Recommended remediation", consensus.remediation, "remediation");
+  list("How to verify", consensus.verification_steps, "verification");
+
+  const frameworks = consensus.compliance?.frameworks;
+  if (Array.isArray(frameworks) && frameworks.length) {
+    const p = document.createElement("p");
+    p.className = "analysis-heading";
+    p.textContent = `Compliance frameworks: ${frameworks.map(String).join(", ")}`;
+    details.appendChild(p);
+  }
+
+  const row = document.createElement("tr");
+  row.className = "scan-analysis";
+  const td = document.createElement("td");
+  td.colSpan = colSpan;
+  td.appendChild(details);
+  row.appendChild(td);
+  return row;
 }
 
 /**

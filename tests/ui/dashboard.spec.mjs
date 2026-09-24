@@ -424,6 +424,130 @@ await test("the degradation notice never renders raw error text", async () => {
   await page.close();
 });
 
+// The stored consensus block (tools/build_store_payload.py sanitize_consensus).
+const CONSENSUS = {
+  status: "success",
+  severity: "HIGH",
+  confidence_percent: 82.5,
+  exploitability: "MEDIUM",
+  impact: "HIGH",
+  false_positive_likelihood: "LOW",
+  internet_exposed: true,
+  remediation: ["Disable TLS 1.0 and 1.1 on the web tier", "Enable HSTS with a one-year max-age"],
+  verification_steps: ["Re-run the TLS check and confirm only TLS 1.2+ is offered"],
+  compliance: { frameworks: ["PCI-DSS", "SOC2"], audit_risk: "HIGH" },
+  models: { total: 15, succeeded: 12 },
+};
+
+async function renderOne(page, scan) {
+  await page.evaluate(
+    (s) =>
+      window.__ti.renderScans(
+        [s],
+        document.getElementById("scans"),
+        document.getElementById("scans-empty")
+      ),
+    scan
+  );
+}
+
+await test("the AI analysis is shown under its scan", async () => {
+  const page = await openConfigured();
+  await renderOne(page, {
+    target: "example.com", status: "completed", scan_status: "ok",
+    summary: { total: 3, high: 1 }, consensus: CONSENSUS,
+  });
+  const row = page.locator("#scans .scan-analysis");
+  assert.equal(await row.count(), 1);
+  const headline = await row.locator("summary").innerText();
+  assert.match(headline, /Iron City AI analysis/);
+  assert.match(headline, /High risk/);
+  assert.match(headline, /83% confidence/);
+  // Collapsed by default: one line per scan, detail on demand.
+  assert.equal(await row.locator("details").getAttribute("open"), null);
+  await row.locator("summary").click();
+  const steps = await row.locator("ol.remediation li").allInnerTexts();
+  assert.deepEqual(steps, CONSENSUS.remediation);
+  assert.equal(await row.locator("ol.verification li").count(), 1);
+  assert.match(await row.innerText(), /PCI-DSS, SOC2/);
+  await page.close();
+});
+
+await test("no AI analysis row unless the analysis succeeded", async () => {
+  const page = await openConfigured();
+  for (const consensus of [
+    undefined,
+    null,
+    { status: "failure" },
+    { status: "no_result" },
+    { status: "unavailable", models: { total: 15, succeeded: 0 } },
+    { status: "success" }, // no severity: nothing to headline
+  ]) {
+    await renderOne(page, { target: "example.com", status: "completed", summary: {}, consensus });
+    assert.equal(
+      await page.locator("#scans .scan-analysis").count(), 0, JSON.stringify(consensus)
+    );
+  }
+  await page.close();
+});
+
+await test("AI analysis text is rendered as text, never markup", async () => {
+  // Remediation is LLM prose. Anything that treated it as HTML would be a
+  // stored-XSS path into every tenant user's session.
+  const page = await openConfigured();
+  const hostile = '<img src=x onerror="window.__pwned=1">';
+  await renderOne(page, {
+    target: "example.com", status: "completed", summary: {},
+    consensus: {
+      ...CONSENSUS,
+      remediation: [hostile],
+      verification_steps: [hostile],
+      compliance: { frameworks: [hostile] },
+    },
+  });
+  await page.locator("#scans .scan-analysis summary").click();
+  assert.equal(await page.locator("#scans img").count(), 0, "markup was interpreted");
+  assert.equal(await page.evaluate(() => window.__pwned), undefined);
+  assert.equal(await page.locator("#scans ol.remediation li").innerText(), hostile);
+  // An unrecognised severity is never echoed: there is no verdict to headline.
+  await renderOne(page, {
+    target: "example.com", status: "completed", summary: {},
+    consensus: { ...CONSENSUS, severity: hostile },
+  });
+  assert.equal(await page.locator("#scans .scan-analysis").count(), 0);
+  assert.equal(await page.locator("#scans img").count(), 0);
+  await page.close();
+});
+
+await test("a malformed analysis record does not break the scan table", async () => {
+  const page = await openConfigured();
+  await renderOne(page, {
+    target: "example.com", status: "completed", summary: { total: 1 },
+    consensus: { ...CONSENSUS, exploitability: 7, impact: { x: 1 }, remediation: "not a list",
+                 compliance: { frameworks: "nope" }, confidence_percent: "high" },
+  });
+  const headline = await page.locator("#scans .scan-analysis summary").innerText();
+  assert.match(headline, /High risk/);
+  assert.ok(!/exploitability|impact|confidence/.test(headline), headline);
+  assert.equal(await page.locator("#scans tr").count(), 2, "scan row + analysis row");
+  await page.close();
+});
+
+await test("an expanded analysis holds at mobile width", async () => {
+  const page = await openConfigured();
+  await page.setViewportSize({ width: 375, height: 720 });
+  await renderOne(page, {
+    target: "example.com", status: "completed", summary: {},
+    consensus: { ...CONSENSUS, remediation: ["Rotate " + "credentials-and-keys-".repeat(40)] },
+  });
+  await page.locator("#scans .scan-analysis summary").click();
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
+  );
+  assert.equal(overflow, false, "page scrolls horizontally at 375px");
+  await page.close();
+});
+
 await test("layout holds at mobile width", async () => {
   const page = await openConfigured();
   await page.setViewportSize({ width: 375, height: 720 });
