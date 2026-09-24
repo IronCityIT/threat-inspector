@@ -26,6 +26,7 @@ const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { scanIdProblem } = require("./scan_id");
 
 // Guarded: trigger.js is loaded from this same deploy and also initialises.
 if (!getApps().length) initializeApp();
@@ -121,8 +122,12 @@ exports.storeScanResults = onRequest(
       res.status(400).json({ error: "client_id (or client_name) is required" });
       return;
     }
-    if (!scanId) {
-      res.status(400).json({ error: "scan_id is required" });
+    // scan_id becomes a Firestore document id. An invalid one made doc() throw
+    // (a 500), and "x/sub/y" was worse: a valid nested path, silently written
+    // somewhere other than scans/{scan_id}. Reject it as the caller's error.
+    const scanIdError = scanIdProblem(scanId);
+    if (scanIdError) {
+      res.status(400).json({ error: scanIdError });
       return;
     }
 
@@ -209,4 +214,4 @@ exports.triggerScan = require("./trigger").triggerScan;
 exports.exchangeAuth0Token = require("./exchange").exchangeAuth0Token;
 
 // Exported for tests (tests/test_functions.mjs). Not part of the HTTP surface.
-exports._internal = { toClientId, verifyIngest, safeEqual };
+exports._internal = { toClientId, verifyIngest, safeEqual, scanIdProblem };
