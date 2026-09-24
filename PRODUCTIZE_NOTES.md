@@ -1070,3 +1070,11 @@ via `port-scan`, third party via `asset-discovery`, a client with no list) each 
 make **0** dispatches. The full `test:functions`, ruff, format, actionlint, JSON and YAML checks are
 green.
 
+**Hardening from review of PR #45 (2026-09-24).** Parser differential: a scheme-less token was accepted
+with any characters as long as it ended in an allowed domain (`evil.com#.acme.com`, `evil.com?.acme.com`,
+`evil.com@x.acme.com`, `evil.com%23.acme.com`, a backslash, a space, `evil.com:1.acme.com`). Built into a
+URL, the first two resolve to `evil.com`. It was unexploitable only because `targets.py` rejects those
+characters first. Every host token and allow-list domain must now match a strict hostname grammar, or it
+is refused as "not a valid hostname". The reviewer's cases are a regression test that **fails on the
+previous matcher** (11/12) and passes now (12/12). Full `test:functions` is green.
+

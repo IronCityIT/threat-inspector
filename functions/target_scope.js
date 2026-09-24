@@ -15,6 +15,14 @@
 
 const net = require("net");
 
+/**
+ * Hostname grammar: dot-separated labels of [a-z0-9-], at least two labels, none
+ * empty. Everything else (#, ?, @, \\, %, :, spaces, ...) is refused outright, so
+ * this check never depends on a downstream parser being stricter than it is.
+ * (Parser-differential hardening from review of threat-inspector PR #45.)
+ */
+const HOSTNAME = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
 /** Lower-case, trim, and drop one trailing dot so "Acme.COM." equals "acme.com". */
 function normHost(value) {
   return String(value || "").trim().toLowerCase().replace(/\.$/, "");
@@ -72,7 +80,7 @@ function parseEntry(entry) {
     return { kind: "net", type, first: n, last: n };
   }
   // A domain needs at least one dot; bare labels cannot be verified as owned.
-  if (v.includes(".") && /^[a-z0-9.-]+$/.test(v)) return { kind: "domain", domain: v };
+  if (HOSTNAME.test(v)) return { kind: "domain", domain: v };
   return null;
 }
 
@@ -92,6 +100,7 @@ function parseToken(token) {
       const n = ipToBigInt(host, type);
       return { kind: "net", type, first: n, last: n, shown: t };
     }
+    if (!HOSTNAME.test(host)) return `not a valid hostname: ${t}`;
     return { kind: "host", host, shown: t };
   }
   if (t.includes("/")) {
@@ -103,7 +112,9 @@ function parseToken(token) {
     const n = ipToBigInt(t, type);
     return { kind: "net", type, first: n, last: n, shown: t };
   }
-  return { kind: "host", host: normHost(t), shown: t };
+  const host = normHost(t);
+  if (!HOSTNAME.test(host)) return `not a valid hostname: ${t}`;
+  return { kind: "host", host, shown: t };
 }
 
 function inScope(target, entries) {

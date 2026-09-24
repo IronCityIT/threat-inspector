@@ -84,6 +84,23 @@ await test("networks must sit inside one allowed range", () => {
   no("10.0.0.0/22", ["10.0.0.0/24", "10.0.3.0/24"]);
   ok("2001:db8::1"); ok("http://[2001:db8::5]/"); no("2001:db9::1");
 });
+await test("host tokens must be plain hostnames (parser differential, PR #45 review)", () => {
+  // Each ends in ".acme.com" but is not a hostname; built into a URL the first
+  // two resolve to evil.com. Refused here rather than relying on targets.py.
+  for (const t of [
+    "evil.com#.acme.com",
+    "evil.com?.acme.com",
+    "evil.com\\.acme.com",
+    "evil.com .acme.com",
+    "evil.com@x.acme.com",
+    "evil.com%23.acme.com",
+    "evil.com:1.acme.com",
+    "acme..com",
+  ]) {
+    assert.match(targetScopeProblem(t, ["acme.com"]), /not a valid hostname/, t);
+  }
+  ok("www.acme.com");
+});
 await test("every comma-separated token must be in scope", () => {
   ok("acme.com, 203.0.113.4"); no("acme.com, evil.com");
 });
