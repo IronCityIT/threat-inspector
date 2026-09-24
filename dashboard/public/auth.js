@@ -78,8 +78,12 @@ export async function startAuth(config, catalog) {
     // A user with no tenant is an authorisation problem, not a crash. Say so.
     $("gate").hidden = false;
     const msg = $("gate-error");
+    // Only a 403 means "no tenant"; anything else is a failed sign-in and must
+    // not be reported as a missing tenant.
     msg.textContent =
-      "Your account is not linked to a client organisation. Contact your administrator.";
+      err && err.status === 403
+        ? "Your account is not linked to a client organisation. Contact your administrator."
+        : `Sign-in could not be completed (${err && err.status ? `code ${err.status}` : "network error"}). Contact your administrator.`;
     msg.hidden = false;
     console.error(err);
     return;
@@ -108,7 +112,11 @@ async function exchange(config, accessToken) {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!res.ok) throw new Error(`exchange failed: ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(`exchange failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 

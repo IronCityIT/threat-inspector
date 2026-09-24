@@ -647,10 +647,10 @@ UNKNOWN (§3.3).
 ### 11.2 Absent — VERIFIED, blockers for the *Firebase* path
 
 `FIREBASE_SERVICE_ACCOUNT` · `INGEST_TOKEN` · `AUTH0_CLIENT_ID` ·
-`FIREBASE_API_KEY` · `GITHUB_DISPATCH_TOKEN` · `AUTH0_AUDIENCE` (optional)
+`FIREBASE_API_KEY` · `GITHUB_DISPATCH_TOKEN` · `AUTH0_AUDIENCE` (required; see PRODUCTIZE_NOTES)
 
 Under the new direction **most of these should never be provisioned.** Only
-`AUTH0_CLIENT_ID` (and possibly `AUTH0_AUDIENCE`) remain relevant, since Auth0 is
+`AUTH0_CLIENT_ID` and `AUTH0_AUDIENCE` remain relevant, since Auth0 is
 retained.
 
 ### 11.3 Operator-set, not repository secrets

@@ -926,7 +926,7 @@ fast listing whichever is missing:
 |---|---|
 | `AUTH0_CLIENT_ID` | The Auth0 **SPA application** for Threat Inspector. Does not exist — must be created in the `dev-ws5377dam2tnlv5g` tenant, with `https://iron-city-it-threatinspector.web.app` as an allowed callback, logout and web origin. |
 | `FIREBASE_API_KEY` | Firebase **web app** config for the TI project. A web app must be registered in that project. |
-| `AUTH0_AUDIENCE` | Optional; only if the access token needs an API audience. |
+| `AUTH0_AUDIENCE` | **Required.** The Auth0 API identifier. The dashboard requests it and `exchangeAuth0Token` verifies it. The exchange fails closed and the deploy refuses to run without it (2026-09-24). |
 | `FIREBASE_SERVICE_ACCOUNT` | Still outstanding — nothing deploys without it. |
 | `GITHUB_DISPATCH_TOKEN` | Still outstanding — `triggerScan` cannot dispatch without it. |
 
@@ -1003,3 +1003,40 @@ receives nothing new.
 
 **Resume check:** after provisioning, run `gh workflow run scan.yml` and confirm that
 Store Results reports `Results stored`.
+
+## Fix — Auth0 audience was never verified in production; scan ids could collide (2026-09-24)
+
+**Failure 1 (security + sign-in).** `exchangeAuth0Token` called `jwtVerify` without an audience whenever
+`AUTH0_AUDIENCE` was empty, and **it was always empty at runtime**. `deploy-functions.yml` injected the
+audience into the dashboard's `config.js` only, never into the functions runtime (no `functions/.env`,
+no param). So in any deployment the aud check was skipped, and any JWT signed by the shared Auth0 tenant
+(another product's API token, an ID token for any app) was accepted. The domain also fell back to a
+hardcoded default, independent of the `AUTH0_DOMAIN` variable the dashboard used. Separately, with no
+audience the SPA SDK returns an opaque access token that can never verify, and the dashboard reported
+every exchange failure as "not linked to a client organisation".
+**Fix.** `functions/exchange_policy.js` (pure): the audience is required, and `jwtVerify` always gets
+issuer + audience. The handler fails closed with `500 exchange_misconfigured` when it is unset. The
+deploy step now refuses to run without `AUTH0_AUDIENCE` and writes `functions/.env` (gitignored; values
+not secret) with the same `AUTH0_DOMAIN`/`AUTH0_AUDIENCE` the dashboard gets. The dashboard shows "not
+linked" only for a 403. Tenant resolution (`resolveClientId`) is unchanged.
+
+**Failure 2.** `triggerScan` minted `ti-${client_id}-${Date.now()}`. Two scans started by one tenant in
+the same millisecond shared an id, and the second overwrote the first's queued record.
+**Fix.** `mintScanId()` in `functions/scan_id.js`: `ti-${client_id}-${ms}-${8 random hex}`.
+
+**Validation.**
+- `tests/functions/exchange_audience.test.mjs` (new, added to `test:functions`): 6/6. It uses real
+  RS256 tokens signed with a local key. The legacy issuer-only options **accept** a token minted for
+  another app. The required audience rejects it (`ERR_JWT_CLAIM_VALIDATION_FAILED`) and accepts ours.
+  The real handler returns 500 `exchange_misconfigured` with no audience. Minted ids are unique within
+  one ms and valid, with a legacy collision reproduction.
+- `npm run test:functions`: 15 + 12 + 10 + 6 passed. `npm audit --audit-level=high` exit 0 (12
+  moderate, pre-existing, deps unchanged). ruff, format and pytest (1,020) green.
+- The deploy "Inject runtime configuration" script was extracted from the workflow and run: with an
+  audience it writes `config.js` and `functions/.env`; without one it fails with
+  `missing dashboard config secret(s): AUTH0_AUDIENCE` and writes nothing.
+- `ci.yml`/`deploy-functions.yml` parse, and actionlint is clean apart from one SC2129 style note that
+  already exists on `main`.
+- Not exercised: a live deploy and login (`FIREBASE_SERVICE_ACCOUNT`, `AUTH0_CLIENT_ID` and
+  `AUTH0_AUDIENCE` are not provisioned).
+
