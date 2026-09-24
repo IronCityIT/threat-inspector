@@ -170,6 +170,13 @@ await test("an unauthenticated caller CANNOT write", async () => {
 
 // ---- paths outside the tenant tree --------------------------------------
 
+await test("a tenant CANNOT widen its own scan scope (allowed_targets)", async () => {
+  // triggerScan trusts clients/{id}.allowed_targets; only operators may set it.
+  const { updateDoc } = await import("firebase/firestore");
+  await assertFails(updateDoc(doc(asTenant("acme"), "clients/acme"), { allowed_targets: ["evil.com"] }));
+  await assertFails(setDoc(doc(asTenant("acme"), "clients/acme"), { allowed_targets: ["evil.com"] }, { merge: true }));
+});
+
 await test("collections outside clients/ are denied by default", async () => {
   const db = asTenant("acme");
   await assertFails(getDoc(doc(db, "secrets/master")));
