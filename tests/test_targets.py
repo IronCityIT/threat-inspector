@@ -291,3 +291,182 @@ def test_a_url_with_no_host_is_refused_with_a_reason():
     report = parse_targets_report(["http:///just/a/path"])
     assert report.targets == []
     assert report.errors == ["'http:///just/a/path' is not a usable URL: no host"]
+
+
+# getaddrinfo() ignores a trailing dot (it only marks the name as fully qualified)
+# and RFC 6761 reserves every name under .localhost for loopback, so both reach
+# the local machine just as "localhost" does.
+_LOCAL_NAME_TOKENS = [
+    "localhost.",
+    "LOCALHOST.",
+    "localhost.localdomain.",
+    "ip6-loopback.",
+    "app.localhost",
+    "App.LocalHost",
+    "app.localhost.",
+    "a.b.localhost",
+    "http://localhost./",
+    "http://LOCALHOST.:8080/",
+    "http://ip6-localhost./",
+    "http://app.localhost/",
+    "https://APP.LOCALHOST.:8443/admin",
+    "http://user:pw@app.localhost/",
+]
+
+
+@pytest.mark.parametrize("token", _LOCAL_NAME_TOKENS)
+def test_trailing_dot_and_dot_localhost_names_are_blocked_by_default(token):
+    report = parse_targets_report([token])
+    assert report.targets == [], f"{token} should be refused without --allow-local"
+    assert len(report.errors) == 1
+    assert "--allow-local" in report.errors[0]
+
+
+@pytest.mark.parametrize("token", _LOCAL_NAME_TOKENS)
+def test_allow_local_admits_trailing_dot_and_dot_localhost_names(token):
+    report = parse_targets_report([token], allow_local=True)
+    assert report.errors == []
+    assert [t.raw for t in report.targets] == [token]
+
+
+@pytest.mark.parametrize(
+    ("token", "kind", "value"),
+    [
+        ("localhost.", "hostname", "localhost."),
+        ("app.localhost", "domain", "app.localhost"),
+        ("http://LOCALHOST.:8080/", "url", "http://LOCALHOST.:8080/"),
+    ],
+)
+def test_the_local_name_check_does_not_rewrite_an_admitted_target(token, kind, value):
+    """Normalisation is for the comparison only; what is stored is what was typed."""
+    assert parse_targets([token], allow_local=True) == [Target(raw=token, kind=kind, value=value)]
+
+
+@pytest.mark.parametrize(
+    ("token", "kind", "value"),
+    [
+        ("notlocalhost.com", "domain", "notlocalhost.com"),
+        ("notlocalhost", "hostname", "notlocalhost"),
+        ("localhost.example.com", "domain", "localhost.example.com"),
+        ("app.localhost.example.com", "domain", "app.localhost.example.com"),
+        ("example.com.", "hostname", "example.com."),
+        ("http://notlocalhost.com/", "url", "http://notlocalhost.com/"),
+        ("http://localhost.example.com/", "url", "http://localhost.example.com/"),
+        ("http://example.com./", "url", "http://example.com./"),
+        ("http://example.com/app.localhost", "url", "http://example.com/app.localhost"),
+    ],
+)
+def test_names_that_merely_contain_localhost_are_still_accepted(token, kind, value):
+    assert parse_targets([token]) == [Target(raw=token, kind=kind, value=value)]
+
+
+# ---- malformed input is a reason, never a traceback ------------------------
+#
+# urlparse() raises a plain ValueError on a bad IPv6 literal, and so does reading
+# .port — later, inside whichever module asks for it. One such token used to
+# discard the whole batch.
+
+_MALFORMED_URLS = [
+    "http://[bad",
+    "https://[::1",
+    "http://exa℀mple.com/",  # NFKC-normalises to a name containing "/"
+]
+_BAD_PORT_URLS = [
+    "http://example.com:99999/",
+    "http://example.com:abc/",
+    "http://example.com:-1/",
+    "http://[2001:db8::1]:99999/",
+]
+
+
+@pytest.mark.parametrize("allow_local", [False, True])
+@pytest.mark.parametrize("token", _MALFORMED_URLS + _BAD_PORT_URLS)
+def test_a_malformed_url_is_refused_with_a_reason(token, allow_local):
+    report = parse_targets_report([token], allow_local=allow_local)
+    assert report.targets == []
+    assert len(report.errors) == 1
+    assert report.errors[0].startswith(f"{token!r} is not a usable URL: ")
+
+
+@pytest.mark.parametrize("token", _BAD_PORT_URLS)
+def test_a_bad_port_is_named_as_the_reason(token):
+    assert "port" in parse_targets_report([token]).errors[0].lower()
+
+
+@pytest.mark.parametrize("token", ["http://[bad", "http://example.com:99999/"])
+def test_strict_form_raises_target_error_for_a_malformed_url(token):
+    """TargetError exactly: pytest.raises(ValueError) would accept the bare one too."""
+    with pytest.raises(TargetError, match="not a usable URL"):
+        parse_targets([token])
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "http://example.com:8080/",
+        "http://example.com:/",  # an empty port is the default port
+        "http://example.com:65535/",
+        "http://[2001:db8::1]:8443/",
+    ],
+)
+def test_a_url_with_a_valid_port_is_still_accepted(token):
+    assert parse_targets([token]) == [Target(raw=token, kind="url", value=token)]
+
+
+def test_a_mixed_batch_keeps_every_good_token():
+    report = parse_targets_report(
+        [
+            "example.com,http://[bad,10.0.0.1",
+            "http://example.com:abc/,http://good.example.com:8080/",
+            "localhost.,app.localhost,example.com.",
+        ]
+    )
+    assert [t.value for t in report.targets] == [
+        "example.com",
+        "10.0.0.1",
+        "http://good.example.com:8080/",
+        "example.com.",
+    ]
+    assert len(report.errors) == 4
+
+
+# ---- targets file that is not text -----------------------------------------
+
+
+def _undecodable_file(tmp_path):
+    f = tmp_path / "latin1.txt"
+    # A decodable first line, so a partial read would be visible as a target.
+    f.write_bytes(b"first.example.com\ns\xe9cret.example.com\n")
+    return f
+
+
+def test_an_undecodable_targets_file_is_an_error_not_a_crash(tmp_path):
+    f = _undecodable_file(tmp_path)
+    report = parse_targets_report(files=[str(f)])
+    assert report.targets == [], "a rejected file must not be half-scanned"
+    assert report.errors == [f"--targets-file {f}: not valid UTF-8 text"]
+
+
+def test_an_undecodable_targets_file_is_rejected_whole_however_late_the_bad_byte(tmp_path):
+    """Past the read buffer, earlier lines have already been handed out when decoding fails."""
+    f = tmp_path / "big.txt"
+    f.write_bytes(b"host.example.com\n" * 5_000 + b"\xff\n")
+    report = parse_targets_report(files=[str(f)])
+    assert report.targets == []
+    assert len(report.errors) == 1
+
+
+def test_an_undecodable_targets_file_does_not_discard_other_values_or_files(tmp_path):
+    bad = _undecodable_file(tmp_path)
+    good = tmp_path / "good.txt"
+    good.write_text("10.0.0.1\n", encoding="utf-8")
+    report = parse_targets_report(["example.com"], files=[str(bad), str(good)])
+    assert [t.value for t in report.targets] == ["example.com", "10.0.0.1"]
+    assert len(report.errors) == 1
+    assert str(bad) in report.errors[0]
+    assert "cret" not in report.errors[0], "the file's contents must not be echoed"
+
+
+def test_strict_form_raises_target_error_for_an_undecodable_targets_file(tmp_path):
+    with pytest.raises(TargetError, match="not valid UTF-8"):
+        parse_targets(files=[str(_undecodable_file(tmp_path))])

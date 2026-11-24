@@ -169,19 +169,35 @@ def _check_ip(ip: IPAddress, token: str, allow_local: bool) -> None:
         )
 
 
+def _check_name(host: str, token: str, allow_local: bool) -> None:
+    """Refuse a host name that means the local machine.
+
+    The normalisation is for this comparison only. A trailing dot merely marks a
+    name as fully qualified, and RFC 6761 reserves all of .localhost for loopback.
+    """
+    if allow_local:
+        return
+    name = host.lower().rstrip(".")
+    if name in _LOCAL_HOSTNAMES or name.endswith(".localhost"):
+        raise TargetError(f"{token!r} points at the local machine; pass --allow-local to scan it")
+
+
 def _check_url(token: str, allow_local: bool) -> Target:
-    parsed = urlparse(token)
+    try:
+        parsed = urlparse(token)
+        host = parsed.hostname
+        _ = parsed.port  # validated on access; a module reading it later must not crash
+    except ValueError as e:
+        raise TargetError(f"{token!r} is not a usable URL: {e}") from e
     scheme = (parsed.scheme or "").lower()
     if scheme not in ALLOWED_SCHEMES:
         raise TargetError(
             f"{token!r} uses unsupported scheme {scheme or '(none)'!r}; "
             f"only {'/'.join(ALLOWED_SCHEMES)} targets are scanned"
         )
-    host = parsed.hostname
     if not host:
         raise TargetError(f"{token!r} is not a usable URL: no host")
-    if not allow_local and host.lower() in _LOCAL_HOSTNAMES:
-        raise TargetError(f"{token!r} points at the local machine; pass --allow-local to scan it")
+    _check_name(host, token, allow_local)
     # Parse first, check second. TargetError subclasses ValueError, so wrapping
     # the _check_ip call in `except ValueError` would swallow the very rejection
     # it is there to raise — which is exactly how a metadata-endpoint URL slipped
@@ -232,9 +248,8 @@ def _classify(token: str, allow_local: bool = False) -> list[Target]:
     if any(c in token for c in " \t/?#@:\\"):
         raise TargetError(f"{token!r} is not a valid IP, CIDR, URL, domain or hostname")
 
+    _check_name(token, token, allow_local)
     lowered = token.lower()
-    if not allow_local and lowered in _LOCAL_HOSTNAMES:
-        raise TargetError(f"{token!r} points at the local machine; pass --allow-local to scan it")
 
     # Domain vs hostname: a dotted name with a TLD-ish last label = domain
     if "." in token and not token.endswith("."):
@@ -250,14 +265,22 @@ def _tokenize(values: list[str] | None, files: list[str] | None) -> tuple[list[s
     for v in values or []:
         tokens.extend(part for part in v.split(",") if part.strip())
     for path in files or []:
+        # Collected per file: one that turns out unreadable part-way is rejected
+        # whole, not scanned up to wherever the read buffer happened to end.
+        file_tokens: list[str] = []
         try:
             with open(path, encoding="utf-8") as fh:
                 for line in fh:
                     line = line.split("#", 1)[0].strip()  # strip comments
                     if line:
-                        tokens.append(line)
+                        file_tokens.append(line)
         except OSError as e:
             errors.append(f"--targets-file {path}: {e.strerror or e}")
+        except UnicodeDecodeError:
+            # The exception's own text quotes the offending byte; keep it out.
+            errors.append(f"--targets-file {path}: not valid UTF-8 text")
+        else:
+            tokens.extend(file_tokens)
     return tokens, errors
 
 
