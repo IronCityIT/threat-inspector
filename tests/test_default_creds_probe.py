@@ -34,7 +34,7 @@ import subprocess
 import threading
 
 import pytest
-from modules.default_creds_check import DefaultCredsCheck, _candidate_bases
+from modules.default_creds_check import _ADMIN_PATHS, DefaultCredsCheck, _candidate_bases
 from targets import Target
 
 # Paths the fake appliance answers 401 on; everything else is a 404.
@@ -179,6 +179,144 @@ def test_the_base_is_resolved_with_one_request_not_one_per_path(appliance):
     root_probes = [p for p in Appliance.requests if p == "/"]
     assert len(root_probes) == 1
     assert len(Appliance.requests) == 1 + 9  # the root probe, then nine paths
+
+
+# ---------------------------------------------------------------------------
+# A site that answers every path the same way is not nine admin panels
+#
+# Reproduced before the change, against these same listeners: 200 everywhere,
+# redirect-to-/ everywhere and 405 everywhere each produced nine medium
+# "Exposed management interface" findings for interfaces that do not exist.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def site():
+    """Start a loopback site; `answer(path)` returns a status, a redirect or None.
+
+    A str is a redirect Location, and None drops the connection with no response.
+    Yields a factory for (target, list of requested paths).
+    """
+    servers = []
+
+    def start(answer, tls_cert=None):
+        requests: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_HEAD(self):  # noqa: N802
+                requests.append(self.path)
+                reply = answer(self.path)
+                if reply is None:
+                    return
+                self.send_response(302 if isinstance(reply, str) else reply)
+                if isinstance(reply, str):
+                    self.send_header("Location", reply)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            # Before Python 3.13 urllib follows a redirected HEAD with a GET.
+            do_GET = do_HEAD  # noqa: N815
+
+            def log_message(self, *args):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        if tls_cert is not None:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(tls_cert[0], tls_cert[1])
+            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        servers.append(srv)
+        return ip_target(f"127.0.0.1:{srv.server_address[1]}"), requests
+
+    yield start
+    for srv in servers:
+        srv.shutdown()
+        srv.server_close()
+
+
+def by_severity(findings, severity):
+    return [f for f in findings if f.severity == severity]
+
+
+def assert_only_not_assessed(findings, baseline_status):
+    """Zero interfaces claimed, and one finding that owns up to the blind spot."""
+    assert by_severity(findings, "medium") == []
+    assert len(findings) == 1
+    note = findings[0]
+    assert note.severity == "info"
+    assert "not assessed" in note.detail
+    assert note.evidence["paths"] == list(_ADMIN_PATHS)
+    assert note.evidence["path"] == ", ".join(_ADMIN_PATHS)  # readers expect the key
+    assert note.evidence["state"] == "not_assessed"
+    assert note.evidence["baseline_status"] == baseline_status
+
+
+def test_200_on_every_path_is_not_nine_exposed_interfaces(site):
+    target, _ = site(lambda path: 200)
+    assert_only_not_assessed(DefaultCredsCheck().run(target, {}), 200)
+
+
+def test_redirecting_every_unknown_path_home_is_not_nine_exposed_interfaces(site):
+    target, _ = site(lambda path: 200 if path == "/" else "/")
+    assert_only_not_assessed(DefaultCredsCheck().run(target, {}), 200)
+
+
+def test_405_on_every_head_is_not_nine_exposed_interfaces(site):
+    target, _ = site(lambda path: 405)
+    assert_only_not_assessed(DefaultCredsCheck().run(target, {}), 405)
+
+
+def test_a_self_signed_catch_all_site_is_baselined_over_the_same_connection_settings(
+    site, self_signed
+):
+    """The baseline must skip validation too, or it fails and suppresses nothing."""
+    target, _ = site(lambda path: 200, tls_cert=self_signed)
+    findings = DefaultCredsCheck().run(target, {})
+    assert_only_not_assessed(findings, 200)
+    assert findings[0].evidence["scheme"] == "https"
+    assert findings[0].evidence["tls_verified"] is False
+
+
+def test_a_guarded_panel_on_a_catch_all_site_is_still_reported(site):
+    target, _ = site(lambda path: 401 if path == "/admin" else 200)
+    findings = DefaultCredsCheck().run(target, {})
+    assert [f.evidence["path"] for f in by_severity(findings, "medium")] == ["/admin"]
+    notes = by_severity(findings, "info")
+    assert len(notes) == 1
+    assert "/admin" not in notes[0].evidence["paths"]
+    assert len(findings) == 2
+
+
+def test_auth_responses_are_reported_even_when_they_are_the_site_default(site):
+    """Suppression never applies to 401/403/407: the whole site may be a panel."""
+    target, _ = site(lambda path: 401)
+    findings = DefaultCredsCheck().run(target, {})
+    assert {f.evidence["path"] for f in findings} == set(_ADMIN_PATHS)
+    assert by_severity(findings, "info") == []
+
+
+def test_an_open_panel_on_a_normal_site_is_still_reported(site):
+    target, _ = site(lambda path: 200 if path in ("/", "/admin") else 404)
+    findings = DefaultCredsCheck().run(target, {})
+    assert [(f.severity, f.evidence["path"]) for f in findings] == [("medium", "/admin")]
+
+
+def test_no_baseline_response_keeps_every_finding(site):
+    """Without a baseline there is nothing to compare, so nothing is suppressed."""
+    target, _ = site(lambda path: 200 if path in ("/", *_ADMIN_PATHS) else None)
+    findings = DefaultCredsCheck().run(target, {})
+    assert {f.evidence["path"] for f in by_severity(findings, "medium")} == set(_ADMIN_PATHS)
+    assert by_severity(findings, "info") == []
+
+
+def test_the_baseline_costs_one_request_to_an_unguessable_path(site):
+    target, requests = site(lambda path: 200)
+    DefaultCredsCheck().run(target, {})
+    DefaultCredsCheck().run(target, {})
+    baselines = [p for p in requests if p not in ("/", *_ADMIN_PATHS)]
+    assert len(requests) == 2 * (1 + 9 + 1)  # root, nine paths, one baseline — per run
+    assert len(baselines) == len(set(baselines)) == 2
 
 
 # ---------------------------------------------------------------------------
