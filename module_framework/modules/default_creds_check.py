@@ -10,6 +10,7 @@ a scoped follow-up (see PRODUCTIZE_NOTES.md) — not fabricated here.
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 from base import Finding, ScanModule
@@ -36,19 +37,36 @@ _ADMIN_PATHS = (
 _AUTH_STATUSES = (401, 403, 407)
 
 
+def _is_present(status: int | None) -> bool:
+    """True if a path answering this status may be a usable interface."""
+    if status is None:
+        return False  # no HTTP response at all — nothing is exposed here
+    # 404/410 is absent; 5xx is broken enough not to be a usable interface.
+    return not (status == 404 or status == 410 or status >= 500)
+
+
 def evaluate(
     results: dict[str, int | None],
     target_value: str,
     scheme: str = "https",
     tls_verified: bool = True,
+    baseline_status: int | None = None,
 ) -> list[Finding]:
-    """Map path -> HTTP status into findings for reachable interfaces (pure — tested)."""
+    """Map path -> HTTP status into findings for reachable interfaces (pure — tested).
+
+    `baseline_status` is what the site answers for a path that cannot exist. A
+    path answering the same is indistinguishable from that default, so it is
+    listed in a single info finding instead of being reported as an interface.
+    None means there is no baseline, and nothing is suppressed.
+    """
     findings: list[Finding] = []
+    not_assessed: list[str] = []
     for path, status in results.items():
-        if status is None:
-            continue  # no HTTP response at all — nothing is exposed here
-        if status == 404 or status == 410 or status >= 500:
-            continue  # absent, or broken enough not to be a usable interface
+        if not _is_present(status):
+            continue
+        if status not in _AUTH_STATUSES and status == baseline_status:
+            not_assessed.append(path)
+            continue
         if status in _AUTH_STATUSES:
             severity = "medium"
             detail = (
@@ -71,6 +89,30 @@ def evaluate(
                 evidence={
                     "path": path,
                     "status": status,
+                    "scheme": scheme,
+                    "tls_verified": tls_verified,
+                },
+            )
+        )
+    if not_assessed:
+        findings.append(
+            Finding(
+                module="default_creds_check",
+                target=target_value,
+                severity="info",
+                title="Management paths could not be assessed",
+                detail=(
+                    f"{len(not_assessed)} management path(s) could not be told apart from the "
+                    f"site's default response ({baseline_status} for a path that does not "
+                    "exist) and were not assessed. This does not show that no management "
+                    "interface is present on them."
+                ),
+                evidence={
+                    # Every finding from this module carries a string "path".
+                    "path": ", ".join(not_assessed),
+                    "paths": not_assessed,
+                    "state": "not_assessed",
+                    "baseline_status": baseline_status,
                     "scheme": scheme,
                     "tls_verified": tls_verified,
                 },
@@ -153,4 +195,22 @@ class DefaultCredsCheck(ScanModule):
             probe = http_probe(f"{base}{path}", timeout=_PROBE_TIMEOUT, verify_tls=verify_tls)
             results[path] = probe.status if probe is not None else None
         scheme = "https" if base.startswith("https://") else "http"
-        return evaluate(results, target.value, scheme=scheme, tls_verified=verify_tls)
+
+        # Catch-all sites (single-page apps, redirect-to-home, 405 to every HEAD)
+        # answer all nine paths alike, so ask what a nonexistent path looks like.
+        # Sent only when an answer depends on it, and unguessable so that it
+        # cannot name something real.
+        baseline_status: int | None = None
+        if any(_is_present(s) and s not in _AUTH_STATUSES for s in results.values()):
+            baseline = http_probe(
+                f"{base}/{secrets.token_hex(16)}", timeout=_PROBE_TIMEOUT, verify_tls=verify_tls
+            )
+            baseline_status = baseline.status if baseline is not None else None
+
+        return evaluate(
+            results,
+            target.value,
+            scheme=scheme,
+            tls_verified=verify_tls,
+            baseline_status=baseline_status,
+        )
