@@ -21,6 +21,9 @@ _EXPIRY_CRITICAL = 0
 _EXPIRY_HIGH = 14
 _EXPIRY_MEDIUM = 30
 
+# The only port the external grading API assesses.
+_GRADED_PORT = 443
+
 
 def _hostname(target) -> str:
     """Extract a bare hostname from a domain/hostname/url target."""
@@ -91,8 +94,12 @@ def cert_finding(days_left: int | None, host: str) -> list[Finding]:
     """Turn days-until-expiry into a finding (pure — unit tested)."""
     if days_left is None:
         return []
-    if days_left <= _EXPIRY_CRITICAL:
+    # Whole days, rounded down: 0 means under 24 hours LEFT, so only a negative
+    # count is an expired certificate.
+    if days_left < 0:
         sev, msg = "critical", "certificate has expired"
+    elif days_left <= _EXPIRY_CRITICAL:
+        sev, msg = "critical", "certificate expires within 24 hours"
     elif days_left <= _EXPIRY_HIGH:
         sev, msg = "high", "certificate expires within two weeks"
     elif days_left <= _EXPIRY_MEDIUM:
@@ -278,6 +285,14 @@ class TlsCertCheck(ScanModule):
             findings.extend(untrusted_finding(tls.reason, host))
         elif tls.cert and tls.cert.get("notAfter"):
             findings.extend(cert_finding(_days_until(tls.cert["notAfter"]), host))
+
+        # The grading API takes a hostname and only ever assesses port 443, so
+        # its answer says nothing about a service on any other port. Mark the
+        # gap on what was found rather than report another service's grade.
+        if port != _GRADED_PORT:
+            for finding in findings:
+                finding.evidence["transport_grade"] = "not_assessed"
+            return findings
 
         # Best-effort transport grade via the public SSL Labs API.
         # quote() because the host is interpolated into a query string: a value
