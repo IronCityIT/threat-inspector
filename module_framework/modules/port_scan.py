@@ -12,6 +12,7 @@ from typing import Any
 
 from base import Finding, ScanModule
 
+from ._host_assessment import not_assessed_findings
 from ._util import run_cmd
 
 _PORT_RE = re.compile(r"(\d+)/(tcp|udp)\s+open\s+(\S+)(.*)")
@@ -50,6 +51,10 @@ class PortScan(ScanModule):
             ["nmap", "-T4", "--top-ports", "1000", "-oN", "-", target.value],
             timeout=300,
         )
-        if not raw:
-            return []
-        return parse_ports(raw, target.value)
+        return parse_ports(raw or "", target.value) + not_assessed_findings(
+            raw,
+            module=self.name,
+            host=target.value,
+            title="Open ports could not be assessed",
+            subject="open ports",
+        )
