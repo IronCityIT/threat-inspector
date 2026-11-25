@@ -13,6 +13,7 @@ from typing import Any
 
 from base import Finding, ScanModule
 
+from ._host_assessment import not_assessed_findings
 from ._util import run_cmd
 
 # e.g. "22/tcp open  ssh  OpenSSH 8.2p1 Ubuntu 4ubuntu0.5 (Ubuntu Linux; protocol 2.0)"
@@ -60,6 +61,10 @@ class ServiceFingerprint(ScanModule):
             ["nmap", "-T4", "-sV", "--top-ports", "1000", "-oN", "-", target.value],
             timeout=600,
         )
-        if not raw:
-            return []
-        return parse_services(raw, target.value)
+        return parse_services(raw or "", target.value) + not_assessed_findings(
+            raw,
+            module=self.name,
+            host=target.value,
+            title="Services could not be identified",
+            subject="services",
+        )

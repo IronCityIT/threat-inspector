@@ -13,6 +13,7 @@ from typing import Any
 
 from base import Finding, ScanModule
 
+from ._host_assessment import not_assessed_findings
 from ._util import run_cmd
 
 # A CVE identifier, and the CVSS score that USUALLY follows it:
@@ -145,6 +146,10 @@ class CveLookup(ScanModule):
             ["nmap", "-sV", "--script", "vulners", "--top-ports", "1000", "-oN", "-", target.value],
             timeout=900,
         )
-        if not raw:
-            return []
-        return parse_cves(raw, target.value)
+        return parse_cves(raw or "", target.value) + not_assessed_findings(
+            raw,
+            module=self.name,
+            host=target.value,
+            title="Known vulnerabilities could not be assessed",
+            subject="known vulnerabilities",
+        )
