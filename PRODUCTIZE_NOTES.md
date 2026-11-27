@@ -1140,3 +1140,72 @@ see it.
 - Also covered: no row for any non-success status; an unknown severity is never echoed; a malformed
   record still renders the scan row; an expanded long answer causes no page overflow at 375px.
 - `node --check` passes.
+
+---
+
+# HALTED — scan workflow cannot be repointed to a NAS ingest: none is defined (2026-11-27)
+
+**Task:** point `scan.yml` → `_consensus-store.yml` (Store Results) and `_report-failure.yml`
+(Report Failure) at the product's NAS ingest instead of the retired `storeScanResults`.
+**Outcome:** no workflow change was made. The task says to halt when no threat-inspector
+ingest endpoint is defined. None is. Inventing a hostname, secret name or variable name would
+give a workflow that points at nothing.
+
+**The failure is still real.** `gh run view 38276811980` (scheduled run on 2026-10-12, and run 37332787306 on
+2026-10-05): Modular Scan, Prepare findings and AI Consensus all pass. Store Results fails at
+`POST to storeScanResults` with `INGEST_TOKEN is not set — storeScanResults will reject this call`.
+Report Failure warns `INGEST_TOKEN not set — cannot report failure to the dashboard`. This matches
+the 2026-09-23 note above.
+
+## What was checked, and what is missing
+
+| Where | Found | Missing |
+|---|---|---|
+| `ICIT-Infrastructure` `main` `ARCHITECTURE.md` | The target shape: POST to "the product's ingest on qnap-nas-01, token auth, via the Cloudflare tunnel". The status table says threat-inspector "follows the DNS Guard pattern once proven". | No endpoint, path, secret name or variable name for threat-inspector. |
+| `hosts/qnap-nas-01/SERVICES.md`, tunnel ingress table | Hostnames `api`, `voice`, `compliance`, `vault`, `obb`, `mcp` and `assayiq` `.ironcityit.com` | **No threat-inspector hostname or origin.** Adding ingress needs a Cloudflare token with tunnel edit (SERVICES.md says so). |
+| `hosts/qnap-nas-01/config/` | Only `icit-mariadb-dump.sh`, with `DBS="ironcity_security"` | No threat-inspector DB in the nightly dump. ARCHITECTURE.md requires that before the DB holds real data. No ingest service config. |
+| `mariadb-schema.sql` | A database named `threat_inspector` exists | Its schema was not captured (no admin login). It is not known whether that DB is this product's. |
+| ShadowScan / DEA "ingest" commits (`00b7435`, `e007620`) | Both add `INGEST_TOKEN` to their **storeScanResults Cloud Function** | No NAS-ingest naming or payload convention to copy. Neither repo has cut over to the NAS. |
+| ICIT-DNSGuard (the pilot) | `980517c` built its own ingest code and says "**Nothing is cut over.** The workflow still POSTs to the Cloud Function". `dns-analysis.yml` still targets `cloudfunctions.net/storeScanResults`. | No cut-over workflow to copy. |
+| `api.ironcityit.com/ingest` (legacy `ironcity-api`, secret `IRONCITY_API_KEY`) | Live, returns 401 without a key | ARCHITECTURE.md: "**not the target ingest**". It uses one shared key with no tenant scoping and 404s any scan not created in QNAP first. Pointing client scans at it would break tenant isolation. |
+| This repo, `src/threat_inspector/api/store.py` | `POST /api/v1/store/scans/{scan_id}/upload`, tenant-scoped, with `TI_API_TOKENS` / `DATABASE_URL` (HANDOFF.md §11.3, §16) | **Built, not deployed.** It has no container on the NAS, no tunnel hostname and no runner-side secret. It also takes a file upload, not the JSON store payload. |
+
+## What Bill needs to provide before this can be done
+
+1. **A deployed ingest for threat-inspector on qnap-nas-01.** Either the in-repo FastAPI store
+   (`src/threat_inspector/api/`) running as a NAS container with `DATABASE_URL` set, or the DNS
+   Guard pattern once it is proven. Bill decides which.
+2. **A MariaDB database and least-privilege user** for the product (`threatinspector` per
+   ARCHITECTURE.md, or a confirmed reuse of the existing `threat_inspector` DB). Also add that DB to
+   `DBS` in `icit-mariadb-dump.sh` and grant the dump user access. Needs a MariaDB admin credential.
+3. **A Cloudflare tunnel ingress hostname** routing to that container. Needs a Cloudflare API
+   token with tunnel edit.
+4. **The ingest contract:** the path, whether it accepts the existing `_consensus-store.yml` JSON
+   payload (`client_id`, `client_name`, `scan_id`, `findings`, `consensus`, …) or needs an adapter,
+   and how failure records are sent.
+5. **Names for the runner-side secret and URL**, e.g. a per-product ingest token secret and an
+   ingest URL variable. They must be agreed fleet-wide so ShadowScan, DEA and DNS Guard use the same
+   ones. Neither is on the approved secret list, so Bill names and provisions them.
+
+## Note for whoever implements the regression test (`tests/test_workflow_ingest.py`)
+
+As specified, it would fail if *any* workflow contains `firebase` or `firestore`. Two workflows
+legitimately contain those strings until the Firebase retirement lands:
+- `deploy-functions.yml`, the Firebase deploy (frozen: no deploy credential exists).
+- `ci.yml`, job `Firestore rules (emulator)`. This is a tenant-isolation check on the committed
+  `firestore.rules`. Removing it to satisfy the new test would delete a check.
+
+So either scope the test to the scan pipeline (`scan.yml`, `_consensus-store.yml`,
+`_report-failure.yml`, and the other `*-scan`/report workflows that call them), or land it with the
+retirement PR that removes `functions/`, `firebase.json`, `firestore.rules` and those two
+workflows.
+
+## Follow-up (unchanged by this note)
+
+The `functions/`, `firebase.json`, `.firebaserc`, `firestore.rules`, `deploy-functions.yml` and the
+emulator CI job are retirement material (HANDOFF.md §5.2). Remove them in their own PR once the NAS
+ingest is live and receiving scans.
+
+**Resume check:** once items 1–5 exist, rewrite only the two POST steps to call the NAS ingest with
+`${{ secrets.<token> }}` / `${{ vars.<url> }}`. Then add the test and run
+`gh workflow run scan.yml`. That run depends on the Actions billing blocker (2026-11-22) being cleared.
